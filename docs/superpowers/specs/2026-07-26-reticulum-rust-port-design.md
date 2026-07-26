@@ -192,13 +192,15 @@ LXMF.
 - I/O errors are isolated to edge crates; the node state machine treats
   interface up/down as events, not errors.
 
+## Pinned target version
+
+- **Python RNS 1.4.1** (latest stable at design time, PyPI package `rns`). All
+  vectors are captured from this version; record it in `vectors/README`. Bump
+  deliberately in a later spec, never silently.
+
 ## Open questions / risks
 
-- **RNS version pin:** choose the exact Python RNS version to target before
-  Phase 0 (crypto key sizes and announce format vary by version). Recommended:
-  latest stable release at implementation start; record the exact version in
-  `vectors/README`.
-- **AES key size:** confirm AES-128 vs AES-256 for the pinned version via
-  captured vectors before writing the Token implementation.
+- **AES key size:** confirm AES-128 vs AES-256 for RNS 1.4.1 via captured
+  vectors before writing the Token implementation.
 - **Ratchet handling:** Milestone 1 decodes/stores ratchets but does not rotate;
   confirm this is acceptable for interop with the target Python version.
