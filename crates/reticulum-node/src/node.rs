@@ -77,6 +77,28 @@ impl Node {
         self.outbound.pop_front()
     }
 
+    pub fn send_message<R: EntropySource>(
+        &mut self,
+        dest_hash: &[u8; 16],
+        plaintext: &[u8],
+        rng: &mut R,
+    ) -> Result<(), NodeError> {
+        let (interface, public) = self
+            .paths
+            .get(dest_hash)
+            .map(|entry| (entry.interface, entry.public.clone()))
+            .ok_or(NodeError::Unknown)?;
+
+        let mut ephemeral = [0u8; 32];
+        let mut iv = [0u8; 16];
+        rng.fill(&mut ephemeral);
+        rng.fill(&mut iv);
+        let ciphertext = token::encrypt(&public, plaintext, &ephemeral, &iv);
+        let packet = Packet::data_single(dest_hash, ciphertext);
+        self.outbound.push_back((interface, packet.encode()));
+        Ok(())
+    }
+
     pub fn handle_inbound(&mut self, bytes: &[u8], interface: u16) -> Vec<Event> {
         let packet = match Packet::decode(bytes) {
             Ok(packet) => packet,
