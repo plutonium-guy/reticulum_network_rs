@@ -2,6 +2,7 @@ use crate::{CoreError, hash::truncated_hash};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicIdentity {
     pub enc_pub: [u8; 32],
     pub sig_pub: [u8; 32],

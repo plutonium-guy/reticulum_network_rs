@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod path_table;
 pub mod rng;
 
 /// Errors surfaced by node operations.
