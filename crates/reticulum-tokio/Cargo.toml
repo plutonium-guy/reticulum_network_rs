@@ -1,0 +1,15 @@
+[package]
+name = "reticulum-tokio"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+reticulum-core = { path = "../reticulum-core" }
+reticulum-node = { path = "../reticulum-node" }
+reticulum-interface = { path = "../reticulum-interface" }
+tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "macros", "sync", "time"] }
+getrandom = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

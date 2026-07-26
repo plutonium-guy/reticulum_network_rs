@@ -4,6 +4,7 @@ members = [
     "crates/reticulum-core",
     "crates/reticulum-interface",
     "crates/reticulum-node",
+    "crates/reticulum-tokio",
 ]
 
 [workspace.package]
