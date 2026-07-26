@@ -7,6 +7,9 @@ use reticulum_core::{
     token,
 };
 
+const PATH_EXPIRY_SECS: u64 = 604_800;
+const PATHFINDER_MAX_HOPS: u8 = 128;
+
 use crate::{
     Event, NodeError,
     clock::{Clock, NoClock},
@@ -100,6 +103,7 @@ impl<C: Clock> Node<C> {
         plaintext: &[u8],
         rng: &mut R,
     ) -> Result<(), NodeError> {
+        self.paths.prune(self.clock.now_secs());
         let (interface, public) = self
             .paths
             .get(dest_hash)
@@ -117,10 +121,14 @@ impl<C: Clock> Node<C> {
     }
 
     pub fn handle_inbound(&mut self, bytes: &[u8], interface: u16) -> Vec<Event> {
-        let packet = match Packet::decode(bytes) {
+        let mut packet = match Packet::decode(bytes) {
             Ok(packet) => packet,
             Err(_) => return Vec::new(),
         };
+        if packet.hops >= PATHFINDER_MAX_HOPS {
+            return Vec::new();
+        }
+        packet.hops = packet.hops.saturating_add(1);
         let dest_hash = match <[u8; 16]>::try_from(packet.dest_hash.as_slice()) {
             Ok(dest_hash) => dest_hash,
             Err(_) => return Vec::new(),
@@ -149,15 +157,33 @@ impl<C: Clock> Node<C> {
             Ok(public) => public,
             Err(error) => return alloc::vec![Event::Error(NodeError::Core(error))],
         };
-        self.paths.insert(
+        let timestamp = announce
+            .random_hash
+            .iter()
+            .skip(5)
+            .fold(0u64, |value, byte| (value << 8) | u64::from(*byte));
+        let next_hop_transport_id = if packet.header_type == 1 {
+            packet.transport_id
+        } else {
+            *dest_hash
+        };
+        let now = self.clock.now_secs();
+        let accepted = self.paths.update(
             *dest_hash,
             PathEntry {
                 interface,
+                next_hop_transport_id,
                 hops: packet.hops,
+                expires_at: now.saturating_add(PATH_EXPIRY_SECS),
+                timestamp,
                 public,
                 ratchet: announce.ratchet,
             },
+            now,
         );
+        if !accepted {
+            return Vec::new();
+        }
         alloc::vec![Event::Announce {
             dest_hash: *dest_hash,
             hops: packet.hops,
@@ -187,5 +213,9 @@ impl<C: Clock> Node<C> {
 
     pub fn knows_path(&self, dest_hash: &[u8; 16]) -> bool {
         self.paths.get(dest_hash).is_some()
+    }
+
+    pub fn prune_paths(&mut self) -> usize {
+        self.paths.prune(self.clock.now_secs())
     }
 }

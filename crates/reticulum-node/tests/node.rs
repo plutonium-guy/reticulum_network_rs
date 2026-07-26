@@ -14,6 +14,25 @@ fn node_uses_injected_clock() {
 }
 
 #[test]
+fn node_prunes_expired_announce_paths_using_injected_time() {
+    let mut sender = Node::new(Identity::from_private_bytes(&[3u8; 32], &[4u8; 32]));
+    let dest_hash = sender.register_single_destination("chat", &["expiry"]);
+    let mut rng = SeededRng::new(1);
+    sender.send_announce(&dest_hash, b"", &mut rng, 0);
+    let (_, announce) = sender.poll_outbound().unwrap();
+
+    let mut receiver = Node::with_clock(
+        Identity::from_private_bytes(&[5u8; 32], &[6u8; 32]),
+        TestClock::new(10),
+    );
+    receiver.handle_inbound(&announce, 2);
+    assert!(receiver.knows_path(&dest_hash));
+    receiver.clock().advance(604_800);
+    assert_eq!(receiver.prune_paths(), 1);
+    assert!(!receiver.knows_path(&dest_hash));
+}
+
+#[test]
 fn node_emits_announce_packet() {
     let identity = Identity::from_private_bytes(&[1u8; 32], &[2u8; 32]);
     let mut node = Node::new(identity);
