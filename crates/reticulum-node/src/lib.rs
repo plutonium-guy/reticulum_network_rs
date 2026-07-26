@@ -7,6 +7,8 @@ pub mod node;
 pub mod path_table;
 pub mod rng;
 
+pub use clock::{Clock, NoClock, TestClock};
+
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

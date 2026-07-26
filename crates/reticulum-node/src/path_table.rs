@@ -25,8 +25,16 @@ impl PathTable {
         }
     }
 
-    pub fn insert(&mut self, dest_hash: [u8; 16], entry: PathEntry) {
-        self.entries.insert(dest_hash, entry);
+    pub fn insert(&mut self, dest_hash: [u8; 16], entry: PathEntry) -> bool {
+        let replace = match self.entries.get(&dest_hash) {
+            None => true,
+            Some(current) if entry.hops < current.hops => true,
+            Some(current) => entry.hops == current.hops && entry.timestamp > current.timestamp,
+        };
+        if replace {
+            self.entries.insert(dest_hash, entry);
+        }
+        replace
     }
 
     /// Applies the deterministic route preference used for valid announces.
@@ -107,11 +115,11 @@ mod tests {
         let destination = [7u8; 16];
         let mut table = PathTable::new();
 
-        assert!(table.update(destination, entry(&id, 4, 20, 100), 10));
-        assert!(!table.update(destination, entry(&id, 5, 30, 100), 10));
-        assert!(table.update(destination, entry(&id, 3, 10, 100), 10));
-        assert!(!table.update(destination, entry(&id, 3, 9, 100), 10));
-        assert!(table.update(destination, entry(&id, 3, 11, 100), 10));
+        assert!(table.insert(destination, entry(&id, 4, 20, 100)));
+        assert!(!table.insert(destination, entry(&id, 5, 30, 100)));
+        assert!(table.insert(destination, entry(&id, 3, 10, 100)));
+        assert!(!table.insert(destination, entry(&id, 3, 9, 100)));
+        assert!(table.insert(destination, entry(&id, 3, 11, 100)));
         assert_eq!(table.get(&destination).unwrap().timestamp, 11);
     }
 
