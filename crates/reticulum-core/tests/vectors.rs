@@ -123,6 +123,20 @@ fn packet_roundtrips_rns_vector() {
 }
 
 #[test]
+fn packet_header2_roundtrips_rns_vector_without_losing_transport_id() {
+    let vector = load("packet_header2.json");
+    let raw = hexf(&vector, "bytes");
+    let packet = Packet::decode(&raw).expect("decode HEADER_2");
+    assert_eq!(
+        packet.header_type as u64,
+        vector["header_type"].as_u64().unwrap()
+    );
+    assert_eq!(packet.transport_id.to_vec(), hexf(&vector, "transport_id"));
+    assert_eq!(packet.dest_hash, hexf(&vector, "dest_hash"));
+    assert_eq!(packet.encode(), raw);
+}
+
+#[test]
 fn packet_announce_constructor_matches_vector() {
     let vector = load("announce.json");
     let raw = hexf(&vector, "bytes");
@@ -201,12 +215,13 @@ fn announce_with_ratchet_parses_and_verifies() {
 fn packet_flags_roundtrip_self_consistent() {
     let p = Packet {
         ifac: true,
-        header_type: 0, // HEADER_1; HEADER_2 store is intentionally lossy
+        header_type: 0,
         context_flag: true,
         propagation: 1,
         dest_type: 2,
         packet_type: 3,
         hops: 7,
+        transport_id: [0u8; 16],
         dest_hash: (0u8..16).collect(),
         context: 5,
         data: vec![9, 9, 9],

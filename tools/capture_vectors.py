@@ -84,10 +84,13 @@ RNS.Transport.owner = _StubOwner()
 OUT = os.path.join(os.path.dirname(__file__), "..", "vectors")
 os.makedirs(OUT, exist_ok=True)
 RATCHET_ONLY = "--ratchet-only" in sys.argv
+TRANSPORT_ONLY = "--transport-only" in sys.argv
 
 
 def w(name, obj):
     if RATCHET_ONLY and name != "announce_ratchet.json":
+        return
+    if TRANSPORT_ONLY and name != "packet_header2.json":
         return
     with open(os.path.join(OUT, name), "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
@@ -267,6 +270,39 @@ w(
         "random_hash": hx(random_hash),
         "signature": hx(signature),
         "app_data": hx(app_data),
+    },
+)
+
+# --- transported announce (HEADER_2) ---
+# RNS emits this shape when a transport node forwards a valid announce:
+# flags | hops | next-hop transport identity | destination | context | data.
+transport_id = seed("transport-id")[:16]
+transported_announce = RNS.Packet(
+    dest,
+    data,
+    RNS.Packet.ANNOUNCE,
+    header_type=RNS.Packet.HEADER_2,
+    transport_type=RNS.Transport.TRANSPORT,
+    transport_id=transport_id,
+)
+transported_announce.hops = 3
+transported_announce.pack()
+parsed_transport = RNS.Packet(None, transported_announce.raw)
+parsed_transport.unpack()
+
+w(
+    "packet_header2.json",
+    {
+        "bytes": hx(transported_announce.raw),
+        "header_type": parsed_transport.header_type,
+        "packet_type": parsed_transport.packet_type,
+        "dest_type": parsed_transport.destination_type,
+        "propagation": parsed_transport.transport_type,
+        "hops": parsed_transport.hops,
+        "transport_id": hx(parsed_transport.transport_id),
+        "dest_hash": hx(parsed_transport.destination_hash),
+        "context": parsed_transport.context,
+        "data": hx(parsed_transport.data),
     },
 )
 

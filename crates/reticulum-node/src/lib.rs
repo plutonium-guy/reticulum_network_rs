@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod clock;
 pub mod node;
 pub mod path_table;
 pub mod rng;

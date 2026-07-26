@@ -9,6 +9,7 @@ use reticulum_core::{
 
 use crate::{
     Event, NodeError,
+    clock::{Clock, NoClock},
     path_table::{PathEntry, PathTable},
     rng::EntropySource,
 };
@@ -19,21 +20,37 @@ struct LocalDestination {
     dest_hash: [u8; 16],
 }
 
-pub struct Node {
+pub struct Node<C: Clock = NoClock> {
     identity: Identity,
+    clock: C,
     locals: Vec<LocalDestination>,
     paths: PathTable,
     outbound: VecDeque<(u16, Vec<u8>)>,
 }
 
-impl Node {
+impl Node<NoClock> {
     pub fn new(identity: Identity) -> Node {
+        Self::with_clock(identity, NoClock)
+    }
+}
+
+impl<C: Clock> Node<C> {
+    pub fn with_clock(identity: Identity, clock: C) -> Self {
         Node {
             identity,
+            clock,
             locals: Vec::new(),
             paths: PathTable::new(),
             outbound: VecDeque::new(),
         }
+    }
+
+    pub fn now_secs(&self) -> u64 {
+        self.clock.now_secs()
+    }
+
+    pub fn clock(&self) -> &C {
+        &self.clock
     }
 
     pub fn register_single_destination(&mut self, app_name: &str, aspects: &[&str]) -> [u8; 16] {

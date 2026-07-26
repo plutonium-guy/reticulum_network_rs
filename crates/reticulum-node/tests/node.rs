@@ -1,7 +1,17 @@
 use reticulum_core::identity::Identity;
 use reticulum_core::packet::{ANNOUNCE, Packet};
+use reticulum_node::clock::TestClock;
 use reticulum_node::node::Node;
 use reticulum_node::rng::SeededRng;
+
+#[test]
+fn node_uses_injected_clock() {
+    let identity = Identity::from_private_bytes(&[1u8; 32], &[2u8; 32]);
+    let node = Node::with_clock(identity, TestClock::new(41));
+    assert_eq!(node.now_secs(), 41);
+    node.clock().advance(1);
+    assert_eq!(node.now_secs(), 42);
+}
 
 #[test]
 fn node_emits_announce_packet() {

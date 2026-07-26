@@ -7,9 +7,12 @@ pub const LINKREQUEST: u8 = 0x02;
 pub const PROOF: u8 = 0x03;
 /// RNS destination type value for a single-identity destination.
 pub const SINGLE: u8 = 0x00;
+pub const PLAIN: u8 = 0x02;
 
-const HEADER_1: u8 = 0;
-const HEADER_2: u8 = 1;
+pub const HEADER_1: u8 = 0;
+pub const HEADER_2: u8 = 1;
+pub const BROADCAST: u8 = 0;
+pub const TRANSPORT: u8 = 1;
 const ADDR_LEN: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +24,8 @@ pub struct Packet {
     pub context_flag: bool,
     pub ifac: bool,
     pub hops: u8,
+    /// Next-hop transport identity for HEADER_2 packets; zeroed for HEADER_1.
+    pub transport_id: [u8; 16],
     pub dest_hash: Vec<u8>,
     pub context: u8,
     pub data: Vec<u8>,
@@ -38,6 +43,7 @@ impl Packet {
             dest_type: Self::SINGLE,
             packet_type: ANNOUNCE,
             hops: 0,
+            transport_id: [0u8; 16],
             dest_hash: dest_hash.to_vec(),
             context: 0,
             data: payload,
@@ -53,6 +59,7 @@ impl Packet {
             dest_type: Self::SINGLE,
             packet_type: DATA,
             hops: 0,
+            transport_id: [0u8; 16],
             dest_hash: dest_hash.to_vec(),
             context: 0,
             data: ciphertext,
@@ -80,7 +87,13 @@ impl Packet {
         if bytes.len() < idx + addr_bytes + 1 {
             return Err(CoreError::Truncated);
         }
-        // HEADER_2: only the destination half of the address block is kept; the transport-ID half is discarded (revisited when transport/HEADER_2 support lands).
+        let transport_id = if header_type == HEADER_2 {
+            bytes[idx..idx + ADDR_LEN]
+                .try_into()
+                .map_err(|_| CoreError::Truncated)?
+        } else {
+            [0u8; 16]
+        };
         let dest_hash = if header_type == HEADER_2 {
             bytes[idx + ADDR_LEN..idx + 2 * ADDR_LEN].to_vec()
         } else {
@@ -99,6 +112,7 @@ impl Packet {
             dest_type,
             packet_type,
             hops,
+            transport_id,
             dest_hash,
             context,
             data,
@@ -112,9 +126,18 @@ impl Packet {
             | ((self.propagation & 0x1) << 4)
             | ((self.dest_type & 0x3) << 2)
             | (self.packet_type & 0x3);
-        let mut out = Vec::with_capacity(2 + self.dest_hash.len() + 1 + self.data.len());
+        let transport_len = if self.header_type == HEADER_2 {
+            ADDR_LEN
+        } else {
+            0
+        };
+        let mut out =
+            Vec::with_capacity(2 + transport_len + self.dest_hash.len() + 1 + self.data.len());
         out.push(flags);
         out.push(self.hops);
+        if self.header_type == HEADER_2 {
+            out.extend_from_slice(&self.transport_id);
+        }
         out.extend_from_slice(&self.dest_hash);
         out.push(self.context);
         out.extend_from_slice(&self.data);
