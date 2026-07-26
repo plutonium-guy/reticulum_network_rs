@@ -16,7 +16,7 @@ fn truncated_is_first_16_of_full() {
     assert_eq!(truncated_hash(data), full_hash(data)[..16]);
 }
 
-use reticulum_core::identity::{Identity, PublicIdentity};
+use reticulum_core::identity::Identity;
 
 #[test]
 fn identity_pubkey_and_hash_match_rns() {
