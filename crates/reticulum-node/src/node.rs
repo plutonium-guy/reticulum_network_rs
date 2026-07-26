@@ -1,9 +1,12 @@
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    vec::Vec,
+};
 use reticulum_core::{
     announce::Announce,
     destination::{destination_hash, name_hash},
     identity::{Identity, PublicIdentity},
-    packet::{ANNOUNCE, DATA, Packet},
+    packet::{ANNOUNCE, DATA, HEADER_2, Packet, TRANSPORT},
     token,
 };
 
@@ -28,6 +31,9 @@ pub struct Node<C: Clock = NoClock> {
     clock: C,
     locals: Vec<LocalDestination>,
     paths: PathTable,
+    interfaces: Vec<u16>,
+    transport_enabled: bool,
+    seen_announces: BTreeMap<([u8; 16], [u8; 10]), u64>,
     outbound: VecDeque<(u16, Vec<u8>)>,
 }
 
@@ -44,6 +50,9 @@ impl<C: Clock> Node<C> {
             clock,
             locals: Vec::new(),
             paths: PathTable::new(),
+            interfaces: Vec::new(),
+            transport_enabled: false,
+            seen_announces: BTreeMap::new(),
             outbound: VecDeque::new(),
         }
     }
@@ -54,6 +63,16 @@ impl<C: Clock> Node<C> {
 
     pub fn clock(&self) -> &C {
         &self.clock
+    }
+
+    pub fn enable_transport(&mut self) {
+        self.transport_enabled = true;
+    }
+
+    pub fn register_interface(&mut self, interface: u16) {
+        if !self.interfaces.contains(&interface) {
+            self.interfaces.push(interface);
+        }
     }
 
     pub fn register_single_destination(&mut self, app_name: &str, aspects: &[&str]) -> [u8; 16] {
@@ -153,6 +172,15 @@ impl<C: Clock> Node<C> {
         if let Err(error) = announce.verify(dest_hash) {
             return alloc::vec![Event::Error(NodeError::Core(error))];
         }
+        let now = self.clock.now_secs();
+        self.seen_announces
+            .retain(|_, expires_at| *expires_at > now);
+        let seen_key = (*dest_hash, announce.random_hash);
+        if self.seen_announces.contains_key(&seen_key) {
+            return Vec::new();
+        }
+        self.seen_announces
+            .insert(seen_key, now.saturating_add(PATH_EXPIRY_SECS));
         let public = match PublicIdentity::from_bytes(&announce.public) {
             Ok(public) => public,
             Err(error) => return alloc::vec![Event::Error(NodeError::Core(error))],
@@ -162,12 +190,11 @@ impl<C: Clock> Node<C> {
             .iter()
             .skip(5)
             .fold(0u64, |value, byte| (value << 8) | u64::from(*byte));
-        let next_hop_transport_id = if packet.header_type == 1 {
+        let next_hop_transport_id = if packet.header_type == HEADER_2 {
             packet.transport_id
         } else {
             *dest_hash
         };
-        let now = self.clock.now_secs();
         let accepted = self.paths.update(
             *dest_hash,
             PathEntry {
@@ -183,6 +210,19 @@ impl<C: Clock> Node<C> {
         );
         if !accepted {
             return Vec::new();
+        }
+        if self.transport_enabled && packet.hops < PATHFINDER_MAX_HOPS {
+            let mut forwarded = packet.clone();
+            forwarded.header_type = HEADER_2;
+            forwarded.propagation = TRANSPORT;
+            forwarded.transport_id = self.identity.hash();
+            let encoded = forwarded.encode();
+            for outbound_interface in &self.interfaces {
+                if *outbound_interface != interface {
+                    self.outbound
+                        .push_back((*outbound_interface, encoded.clone()));
+                }
+            }
         }
         alloc::vec![Event::Announce {
             dest_hash: *dest_hash,

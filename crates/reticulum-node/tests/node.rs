@@ -1,5 +1,5 @@
 use reticulum_core::identity::Identity;
-use reticulum_core::packet::{ANNOUNCE, Packet};
+use reticulum_core::packet::{ANNOUNCE, HEADER_2, Packet, TRANSPORT};
 use reticulum_node::clock::TestClock;
 use reticulum_node::node::Node;
 use reticulum_node::rng::SeededRng;
@@ -30,6 +30,62 @@ fn node_prunes_expired_announce_paths_using_injected_time() {
     receiver.clock().advance(604_800);
     assert_eq!(receiver.prune_paths(), 1);
     assert!(!receiver.knows_path(&dest_hash));
+}
+
+#[test]
+fn transport_propagates_valid_announce_to_other_interfaces_as_header2() {
+    let mut origin = Node::new(Identity::from_private_bytes(&[3u8; 32], &[4u8; 32]));
+    let dest_hash = origin.register_single_destination("chat", &["transported"]);
+    let mut rng = SeededRng::new(1);
+    origin.send_announce(&dest_hash, b"", &mut rng, 1);
+    let (_, announce) = origin.poll_outbound().unwrap();
+
+    let relay_identity = Identity::from_private_bytes(&[5u8; 32], &[6u8; 32]);
+    let relay_transport_id = relay_identity.hash();
+    let mut relay = Node::new(relay_identity);
+    relay.enable_transport();
+    relay.register_interface(1);
+    relay.register_interface(2);
+
+    let events = relay.handle_inbound(&announce, 1);
+    assert!(matches!(
+        &events[..],
+        [reticulum_node::Event::Announce { .. }]
+    ));
+    let (interface, forwarded) = relay.poll_outbound().unwrap();
+    assert_eq!(interface, 2);
+    let packet = Packet::decode(&forwarded).unwrap();
+    assert_eq!(packet.header_type, HEADER_2);
+    assert_eq!(packet.propagation, TRANSPORT);
+    assert_eq!(packet.transport_id, relay_transport_id);
+    assert_eq!(packet.dest_hash, dest_hash);
+    assert_eq!(packet.hops, 1);
+    assert!(relay.poll_outbound().is_none());
+}
+
+#[test]
+fn transport_suppresses_duplicate_announces_and_hop_limit_propagation() {
+    let mut origin = Node::new(Identity::from_private_bytes(&[3u8; 32], &[4u8; 32]));
+    let dest_hash = origin.register_single_destination("chat", &["duplicate"]);
+    let mut rng = SeededRng::new(1);
+    origin.send_announce(&dest_hash, b"", &mut rng, 1);
+    let (_, announce) = origin.poll_outbound().unwrap();
+
+    let mut relay = Node::new(Identity::from_private_bytes(&[5u8; 32], &[6u8; 32]));
+    relay.enable_transport();
+    relay.register_interface(1);
+    relay.register_interface(2);
+    relay.handle_inbound(&announce, 1);
+    relay.poll_outbound().unwrap();
+
+    assert!(relay.handle_inbound(&announce, 1).is_empty());
+    assert!(relay.poll_outbound().is_none());
+
+    origin.send_announce(&dest_hash, b"", &mut rng, 1);
+    let (_, mut at_limit) = origin.poll_outbound().unwrap();
+    at_limit[1] = 127;
+    relay.handle_inbound(&at_limit, 1);
+    assert!(relay.poll_outbound().is_none());
 }
 
 #[test]
