@@ -8,6 +8,7 @@ use reticulum_core::identity::Identity;
 use reticulum_node::rng::EntropySource;
 use reticulum_tokio::OsEntropy;
 use serde::Deserialize;
+use zeroize::Zeroize;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -109,12 +110,16 @@ pub fn save_or_create_identity(path: &Path) -> io::Result<Identity> {
     };
     file.write_all(&private)?;
     file.sync_all()?;
-    identity_from_private(&private)
+    let identity = identity_from_private(&private);
+    private.zeroize();
+    identity
 }
 
 fn load_identity(path: &Path) -> io::Result<Identity> {
-    let private = fs::read(path)?;
-    identity_from_private(&private)
+    let mut private = fs::read(path)?;
+    let identity = identity_from_private(&private);
+    private.zeroize();
+    identity
 }
 
 fn identity_from_private(private: &[u8]) -> io::Result<Identity> {
