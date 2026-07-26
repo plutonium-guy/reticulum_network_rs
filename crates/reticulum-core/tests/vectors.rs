@@ -123,6 +123,26 @@ fn packet_roundtrips_rns_vector() {
 }
 
 #[test]
+fn packet_announce_constructor_matches_vector() {
+    let vector = load("announce.json");
+    let raw = hexf(&vector, "bytes");
+    let dest_hash: [u8; 16] = hexf(&vector, "dest_hash").try_into().unwrap();
+    let packet = Packet::announce(&dest_hash, raw[19..].to_vec());
+    assert_eq!(packet.encode(), raw);
+}
+
+#[test]
+fn packet_data_single_shape() {
+    use reticulum_core::packet::DATA;
+
+    let dest_hash = [7u8; 16];
+    let packet = Packet::data_single(&dest_hash, vec![1, 2, 3]);
+    assert_eq!(packet.packet_type, DATA);
+    assert_eq!(packet.dest_hash, dest_hash.to_vec());
+    assert_eq!(Packet::decode(&packet.encode()).unwrap(), packet);
+}
+
+#[test]
 fn packet_decode_rejects_short_input() {
     assert!(Packet::decode(&[0x00]).is_err());
 }

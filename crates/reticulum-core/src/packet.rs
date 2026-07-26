@@ -5,6 +5,8 @@ pub const DATA: u8 = 0x00;
 pub const ANNOUNCE: u8 = 0x01;
 pub const LINKREQUEST: u8 = 0x02;
 pub const PROOF: u8 = 0x03;
+/// RNS destination type value for a single-identity destination.
+pub const SINGLE: u8 = 0x00;
 
 const HEADER_1: u8 = 0;
 const HEADER_2: u8 = 1;
@@ -25,6 +27,38 @@ pub struct Packet {
 }
 
 impl Packet {
+    pub const SINGLE: u8 = crate::packet::SINGLE;
+
+    pub fn announce(dest_hash: &[u8; 16], payload: Vec<u8>) -> Packet {
+        Packet {
+            ifac: false,
+            header_type: HEADER_1,
+            context_flag: false,
+            propagation: 0,
+            dest_type: Self::SINGLE,
+            packet_type: ANNOUNCE,
+            hops: 0,
+            dest_hash: dest_hash.to_vec(),
+            context: 0,
+            data: payload,
+        }
+    }
+
+    pub fn data_single(dest_hash: &[u8; 16], ciphertext: Vec<u8>) -> Packet {
+        Packet {
+            ifac: false,
+            header_type: HEADER_1,
+            context_flag: false,
+            propagation: 0,
+            dest_type: Self::SINGLE,
+            packet_type: DATA,
+            hops: 0,
+            dest_hash: dest_hash.to_vec(),
+            context: 0,
+            data: ciphertext,
+        }
+    }
+
     pub fn decode(bytes: &[u8]) -> Result<Packet, CoreError> {
         if bytes.len() < 2 {
             return Err(CoreError::Truncated);
