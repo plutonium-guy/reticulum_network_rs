@@ -88,3 +88,24 @@ fn token_roundtrip() {
     let pt = token::decrypt(&id, &ct).expect("decrypt");
     assert_eq!(pt, b"roundtrip");
 }
+
+use reticulum_core::packet::Packet;
+
+#[test]
+fn packet_roundtrips_rns_vector() {
+    let v = load("packet_data.json");
+    let raw = hexf(&v, "bytes");
+    let p = Packet::decode(&raw).expect("decode");
+    assert_eq!(p.packet_type as u64, v["packet_type"].as_u64().unwrap());
+    assert_eq!(p.dest_type as u64, v["dest_type"].as_u64().unwrap());
+    assert_eq!(p.hops as u64, v["hops"].as_u64().unwrap());
+    assert_eq!(p.dest_hash, hexf(&v, "dest_hash"));
+    assert_eq!(p.context as u64, v["context"].as_u64().unwrap());
+    assert_eq!(p.data, hexf(&v, "data"));
+    assert_eq!(p.encode(), raw); // byte-exact re-encode
+}
+
+#[test]
+fn packet_decode_rejects_short_input() {
+    assert!(Packet::decode(&[0x00]).is_err());
+}
