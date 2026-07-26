@@ -135,6 +135,26 @@ fn announce_parses_and_verifies_rns_vector() {
 }
 
 #[test]
+fn announce_build_reproduces_rns_vector() {
+    let idv = load("identity.json");
+    let x: [u8; 32] = hexf(&idv, "prv_x25519").try_into().unwrap();
+    let e: [u8; 32] = hexf(&idv, "prv_ed25519").try_into().unwrap();
+    let id = Identity::from_private_bytes(&x, &e);
+
+    let av = load("announce.json");
+    let dest_hash: [u8; 16] = hexf(&av, "dest_hash").try_into().unwrap();
+    let name_hash: [u8; 10] = hexf(&av, "name_hash").try_into().unwrap();
+    let random_hash: [u8; 10] = hexf(&av, "random_hash").try_into().unwrap();
+    let app_data = hexf(&av, "app_data");
+
+    let built = Announce::build(&id, &dest_hash, &name_hash, &random_hash, &app_data);
+    assert_eq!(built.signature.to_vec(), hexf(&av, "signature"));
+    let raw = hexf(&av, "bytes");
+    assert_eq!(built.to_payload(), raw[19..].to_vec());
+    assert!(built.verify(&dest_hash).is_ok());
+}
+
+#[test]
 fn packet_flags_roundtrip_self_consistent() {
     let p = Packet {
         ifac: true,
