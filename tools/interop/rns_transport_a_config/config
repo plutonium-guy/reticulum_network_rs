@@ -1,0 +1,17 @@
+[reticulum]
+enable_transport = yes
+share_instance = yes
+instance_name = reticulum-rust-transport-a
+shared_instance_port = 37431
+instance_control_port = 37432
+
+[logging]
+loglevel = 6
+
+[interfaces]
+
+  [[Rust Transport A TCP Server]]
+    type = TCPServerInterface
+    enabled = yes
+    listen_ip = 127.0.0.1
+    listen_port = 42429

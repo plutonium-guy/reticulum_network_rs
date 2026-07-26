@@ -29,3 +29,14 @@ message <rust-destination-hash> hello from python
 Run `./tools/interop/run_interop.sh` to regenerate the evidence with fresh,
 temporary identities. Logs are retained in the temporary directory printed by
 the script.
+
+Milestone 2 adds a separate three-node transport gate:
+
+```text
+Python endpoint A <-> Rust transport relay <-> Python endpoint C
+```
+
+Run `./tools/interop/run_transport_interop.sh`. It starts two isolated RNS
+1.4.1 transport instances, verifies that each endpoint learns the other at
+multiple hops, sends encrypted payloads in both directions, and asserts that
+the Rust relay log never contains either plaintext.

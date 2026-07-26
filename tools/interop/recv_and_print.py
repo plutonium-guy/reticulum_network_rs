@@ -29,6 +29,8 @@ def main():
     parser.add_argument("--identity", required=True)
     parser.add_argument("--output")
     parser.add_argument("--timeout", type=float, default=20)
+    parser.add_argument("--app-name", default=APP_NAME)
+    parser.add_argument("--aspects", default=",".join(ASPECTS))
     args = parser.parse_args()
 
     RNS.Reticulum(configdir=args.config, loglevel=3)
@@ -37,8 +39,8 @@ def main():
         identity,
         RNS.Destination.IN,
         RNS.Destination.SINGLE,
-        APP_NAME,
-        *ASPECTS,
+        args.app_name,
+        *tuple(aspect for aspect in args.aspects.split(",") if aspect),
     )
     received = threading.Event()
 

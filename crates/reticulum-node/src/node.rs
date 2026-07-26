@@ -14,6 +14,7 @@ use reticulum_core::{
 
 const PATH_EXPIRY_SECS: u64 = 604_800;
 const PATHFINDER_MAX_HOPS: u8 = 128;
+const PACKET_HASH_TTL_SECS: u64 = 60;
 
 use crate::{
     Event, NodeError,
@@ -37,6 +38,7 @@ pub struct Node<C: Clock = NoClock> {
     transport_enabled: bool,
     seen_announces: BTreeMap<([u8; 16], [u8; 10]), u64>,
     seen_path_requests: BTreeMap<([u8; 16], [u8; 16]), u64>,
+    seen_packets: BTreeMap<[u8; 16], u64>,
     cached_announces: BTreeMap<[u8; 16], Packet>,
     outbound: VecDeque<(u16, Vec<u8>)>,
 }
@@ -58,6 +60,7 @@ impl<C: Clock> Node<C> {
             transport_enabled: false,
             seen_announces: BTreeMap::new(),
             seen_path_requests: BTreeMap::new(),
+            seen_packets: BTreeMap::new(),
             cached_announces: BTreeMap::new(),
             outbound: VecDeque::new(),
         }
@@ -176,6 +179,14 @@ impl<C: Clock> Node<C> {
         if packet.hops >= PATHFINDER_MAX_HOPS {
             return Vec::new();
         }
+        let now = self.clock.now_secs();
+        self.seen_packets.retain(|_, expires_at| *expires_at > now);
+        let packet_hash = packet.packet_hash();
+        if self.seen_packets.contains_key(&packet_hash) {
+            return Vec::new();
+        }
+        self.seen_packets
+            .insert(packet_hash, now.saturating_add(PACKET_HASH_TTL_SECS));
         packet.hops = packet.hops.saturating_add(1);
         let dest_hash = match <[u8; 16]>::try_from(packet.dest_hash.as_slice()) {
             Ok(dest_hash) => dest_hash,
@@ -190,7 +201,7 @@ impl<C: Clock> Node<C> {
         }
         match packet.packet_type {
             ANNOUNCE => self.handle_announce(&packet, &dest_hash, interface),
-            DATA => self.handle_data(&packet, &dest_hash),
+            DATA => self.handle_data(&packet, &dest_hash, interface),
             _ => Vec::new(),
         }
     }
@@ -201,6 +212,13 @@ impl<C: Clock> Node<C> {
         dest_hash: &[u8; 16],
         interface: u16,
     ) -> Vec<Event> {
+        if self
+            .locals
+            .iter()
+            .any(|local| &local.dest_hash == dest_hash)
+        {
+            return Vec::new();
+        }
         let announce = match Announce::parse(&packet.data, packet.context_flag) {
             Ok(announce) => announce,
             Err(_) => return Vec::new(),
@@ -326,7 +344,7 @@ impl<C: Clock> Node<C> {
         self.outbound.push_back((interface, response.encode()));
     }
 
-    fn handle_data(&mut self, packet: &Packet, dest_hash: &[u8; 16]) -> Vec<Event> {
+    fn handle_data(&mut self, packet: &Packet, dest_hash: &[u8; 16], interface: u16) -> Vec<Event> {
         if packet.header_type == HEADER_2
             && (!self.transport_enabled || packet.transport_id != self.identity.hash())
         {
@@ -339,7 +357,11 @@ impl<C: Clock> Node<C> {
         {
             if packet.header_type == HEADER_2 && packet.hops < PATHFINDER_MAX_HOPS {
                 self.paths.prune(self.clock.now_secs());
-                if let Some(path) = self.paths.get(dest_hash) {
+                if let Some(path) = self
+                    .paths
+                    .get(dest_hash)
+                    .filter(|path| path.interface != interface)
+                {
                     let mut forwarded = packet.clone();
                     if path.hops > 1 {
                         forwarded.transport_id = path.next_hop_transport_id;

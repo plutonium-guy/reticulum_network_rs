@@ -1,0 +1,7 @@
+tcp_peers = ["127.0.0.1:42429", "127.0.0.1:42430"]
+transport_enabled = true
+identity_path = "reticulum-transport-relay.identity"
+app_name = "reticulum_transport_relay"
+aspects = ["status"]
+app_data = "rust transport relay"
+announce_interval_secs = 2

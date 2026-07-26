@@ -102,6 +102,16 @@ impl Packet {
         }
     }
 
+    /// RNS packet hash, excluding mutable hop and transport-routing fields.
+    pub fn packet_hash(&self) -> [u8; 16] {
+        let mut hashable = Vec::with_capacity(1 + self.dest_hash.len() + 1 + self.data.len());
+        hashable.push(((self.dest_type & 0x3) << 2) | (self.packet_type & 0x3));
+        hashable.extend_from_slice(&self.dest_hash);
+        hashable.push(self.context);
+        hashable.extend_from_slice(&self.data);
+        crate::hash::truncated_hash(&hashable)
+    }
+
     pub fn decode(bytes: &[u8]) -> Result<Packet, CoreError> {
         if bytes.len() < 2 {
             return Err(CoreError::Truncated);

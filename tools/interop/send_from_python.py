@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--destination", required=True)
     parser.add_argument("--message", required=True)
     parser.add_argument("--timeout", type=float, default=20)
+    parser.add_argument("--app-name", default=APP_NAME)
+    parser.add_argument("--aspects", default=",".join(ASPECTS))
     args = parser.parse_args()
 
     target = bytes.fromhex(args.destination)
@@ -39,8 +41,8 @@ def main():
         identity,
         RNS.Destination.OUT,
         RNS.Destination.SINGLE,
-        APP_NAME,
-        *ASPECTS,
+        args.app_name,
+        *tuple(aspect for aspect in args.aspects.split(",") if aspect),
     )
     if destination.hash != target:
         raise ValueError("target hash does not match the configured app name/aspects")

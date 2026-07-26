@@ -130,6 +130,9 @@ fn transport_routes_header2_data_to_learned_next_hop() {
         [reticulum_node::Event::Message { plaintext, .. }]
             if plaintext == b"through relay"
     ));
+
+    assert!(relay.handle_inbound(&routed_data, 10).is_empty());
+    assert!(relay.poll_outbound().is_none());
 }
 
 #[test]
@@ -214,6 +217,18 @@ fn transport_answers_path_request_for_known_route() {
     assert_eq!(response.transport_id, relay_id);
     assert_eq!(response.dest_hash, destination);
     assert_eq!(response.context, PATH_RESPONSE);
+}
+
+#[test]
+fn node_ignores_looped_back_announce_for_its_local_destination() {
+    let mut node = Node::new(Identity::from_private_bytes(&[1u8; 32], &[2u8; 32]));
+    let destination = node.register_single_destination("chat", &["local-loop"]);
+    let mut rng = SeededRng::new(1);
+    node.send_announce(&destination, b"", &mut rng, 1);
+    let (_, announce) = node.poll_outbound().unwrap();
+
+    assert!(node.handle_inbound(&announce, 2).is_empty());
+    assert!(!node.knows_path(&destination));
 }
 
 #[test]
