@@ -1,0 +1,19 @@
+[package]
+name = "reticulum-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+sha2.workspace = true
+hmac.workspace = true
+hkdf.workspace = true
+aes.workspace = true
+cbc = { workspace = true, features = ["alloc", "block-padding"] }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+x25519-dalek = { workspace = true, features = ["static_secrets"] }
+
+[dev-dependencies]
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true

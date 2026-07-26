@@ -711,8 +711,8 @@ git commit -m "feat(core): destination name-hash and destination-hash"
 **Interfaces:**
 - Consumes: `identity::Identity` (for `diffie_hellman`), `CoreError`.
 - Produces:
-  - `pub fn decrypt(recipient: &Identity, token: &[u8]) -> Result<Vec<u8>, CoreError>`
-  - `pub fn encrypt(recipient_enc_pub: &[u8;32], plaintext: &[u8], ephemeral_x25519: &[u8;32]) -> Vec<u8>` (ephemeral key passed in so the function is deterministic and testable)
+  - `pub fn decrypt(recipient: &Identity, token: &[u8]) -> Result<Vec<u8>, CoreError>` (single RNS identity-hash salt, strictly RNS 1.4.1-conformant)
+  - `pub fn encrypt(recipient: &PublicIdentity, plaintext: &[u8], ephemeral_x25519: &[u8;32], iv: &[u8;16]) -> Vec<u8>` (takes the recipient's FULL public identity so it derives the correct HKDF salt = `truncated_hash(enc_pub‖sig_pub)`; ephemeral key and IV passed in for determinism/testability. **Amended from the original `recipient_enc_pub: &[u8;32]` signature during execution — the enc-pub-only form could not produce RNS-decryptable tokens.**)
 
 > **Set the AES type from the recorded `aes_key_bits`** (from Task 0.2 Step 3). If 256, use `Aes256`; if 128, use `Aes128`. The single line to change is the `type Aes = ...` alias below.
 
