@@ -17,6 +17,7 @@ pub struct Config {
     pub app_name: String,
     pub aspects: Vec<String>,
     pub app_data: String,
+    pub announce_interval_secs: u64,
 }
 
 impl Default for Config {
@@ -27,6 +28,7 @@ impl Default for Config {
             app_name: "reticulum_rust".to_owned(),
             aspects: vec!["message".to_owned()],
             app_data: String::new(),
+            announce_interval_secs: 30,
         }
     }
 }
@@ -71,6 +73,11 @@ impl Config {
         }
         if let Ok(value) = std::env::var("RETICULUM_APP_DATA") {
             self.app_data = value;
+        }
+        if let Ok(value) = std::env::var("RETICULUM_ANNOUNCE_INTERVAL_SECS")
+            && let Ok(seconds) = value.parse()
+        {
+            self.announce_interval_secs = seconds;
         }
     }
 }

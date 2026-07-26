@@ -49,8 +49,30 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
     match mode {
         Mode::Run => {
-            while let Some(event) = events_rx.recv().await {
-                print_event(&event);
+            let mut announce_interval =
+                tokio::time::interval(Duration::from_secs(config.announce_interval_secs.max(1)));
+            announce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Consume the immediate first tick; the initial announce was
+            // already queued above.
+            announce_interval.tick().await;
+            loop {
+                tokio::select! {
+                    event = events_rx.recv() => {
+                        let Some(event) = event else {
+                            break;
+                        };
+                        print_event(&event);
+                    }
+                    _ = announce_interval.tick() => {
+                        handle
+                            .announce_all(config.app_data.as_bytes())
+                            .await
+                            .map_err(|_| io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "driver stopped before periodic announce",
+                            ))?;
+                    }
+                }
             }
         }
         Mode::Announce => {
