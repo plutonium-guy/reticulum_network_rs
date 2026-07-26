@@ -24,20 +24,17 @@
 //!   `signed_parts = iv + ciphertext` — the HMAC covers **iv || ciphertext
 //!   only**, not the ephemeral public key.
 //!
-//! ## A deliberate deviation for `encrypt()`
-//!
-//! This module's [`encrypt`] only receives the recipient's raw 32-byte
-//! X25519 public key (per this crate's fixed interface), not their Ed25519
-//! signing key. It therefore cannot reproduce RNS's true per-identity salt,
-//! which mixes in the signing key too. It salts with
-//! `truncated_hash(recipient_enc_pub)` instead. [`decrypt`] tries the real
-//! RNS identity-hash salt first — so it matches genuine RNS-produced tokens
-//! such as the authoritative vector — and falls back to the enc-pub-only
-//! salt so it can also decrypt tokens produced by this module's own
-//! `encrypt`. This mirrors how RNS's own `Identity.decrypt` tries several
-//! candidate derived keys (ratchets) before giving up.
+//! `encrypt()` takes the recipient's full [`crate::identity::PublicIdentity`]
+//! (not just the raw X25519 public key) so it can compute the real RNS salt,
+//! `recipient.hash()` = `truncated_hash(enc_pub || sig_pub)`. `decrypt()`
+//! uses the same single salt, derived from the local `Identity`'s own public
+//! half. This makes tokens produced by [`encrypt`] decryptable by real RNS
+//! nodes, and vice versa.
 
-use crate::{hash::truncated_hash, identity::Identity, CoreError};
+use crate::{
+    identity::{Identity, PublicIdentity},
+    CoreError,
+};
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
 use alloc::vec::Vec;
 use hkdf::Hkdf;
@@ -72,33 +69,33 @@ fn derive_keys(shared: &[u8; 32], salt: &[u8; SALT_LEN]) -> ([u8; HMAC_LEN], [u8
     (hmac_key, aes_key)
 }
 
-/// Encrypt `plaintext` for `recipient_enc_pub` using the given ephemeral
-/// X25519 secret. The ephemeral secret (and, in this deterministic-for-tests
-/// implementation, the IV) is caller-supplied; production callers must draw
-/// both from a CSPRNG.
+/// Encrypt `plaintext` for `recipient` using the given ephemeral X25519
+/// secret and IV. Both `ephemeral_x25519` and `iv` are caller-supplied;
+/// production callers must draw both from a CSPRNG.
+///
+/// The HKDF salt is `recipient.hash()`, the recipient's full identity hash
+/// (`truncated_hash(enc_pub || sig_pub)`), matching real RNS 1.4.1.
 pub fn encrypt(
-    recipient_enc_pub: &[u8; 32],
+    recipient: &PublicIdentity,
     plaintext: &[u8],
     ephemeral_x25519: &[u8; 32],
+    iv: &[u8; IV_LEN],
 ) -> Vec<u8> {
     let eph = StaticSecret::from(*ephemeral_x25519);
     let eph_pub = XPublic::from(&eph).to_bytes();
     let shared = eph
-        .diffie_hellman(&XPublic::from(*recipient_enc_pub))
+        .diffie_hellman(&XPublic::from(recipient.enc_pub))
         .to_bytes();
 
-    // See module docs: encrypt() only has the raw enc pubkey, so it salts
-    // with a hash of that alone rather than RNS's full identity hash.
-    let salt = truncated_hash(recipient_enc_pub);
+    let salt = recipient.hash();
     let (hmac_key, aes_key) = derive_keys(&shared, &salt);
 
-    let iv = [0u8; IV_LEN]; // deterministic for tests; production draws a random IV
     let ct =
         Enc::new(aes_key[..].into(), iv[..].into()).encrypt_padded_vec_mut::<Pkcs7>(plaintext);
 
     // RNS Token.encrypt signs (iv || ciphertext) only.
     let mut signed_parts = Vec::with_capacity(IV_LEN + ct.len());
-    signed_parts.extend_from_slice(&iv);
+    signed_parts.extend_from_slice(iv);
     signed_parts.extend_from_slice(&ct);
 
     let mut mac =
@@ -114,17 +111,21 @@ pub fn encrypt(
     out
 }
 
-/// Attempt Token decryption with one candidate salt. Returns `Err` on either
-/// HMAC mismatch or padding failure, so callers can try the next candidate.
-fn try_decrypt_with_salt(
-    recipient: &Identity,
-    eph_pub: &[u8; 32],
-    signed_parts: &[u8],
-    tag: &[u8],
-    salt: &[u8; SALT_LEN],
-) -> Result<Vec<u8>, CoreError> {
-    let shared = recipient.diffie_hellman(eph_pub);
-    let (hmac_key, aes_key) = derive_keys(&shared, salt);
+/// Decrypt a Token addressed to `recipient`.
+///
+/// Uses the real RNS per-identity salt (`truncated_hash(enc_pub||sig_pub)`,
+/// i.e. `recipient.public().hash()`), strictly RNS-conformant.
+pub fn decrypt(recipient: &Identity, token: &[u8]) -> Result<Vec<u8>, CoreError> {
+    if token.len() < EPH_LEN + IV_LEN + 16 + HMAC_LEN {
+        return Err(CoreError::Truncated);
+    }
+    let (body, tag) = token.split_at(token.len() - HMAC_LEN);
+    let eph_pub: [u8; 32] = body[..EPH_LEN].try_into().map_err(|_| CoreError::Truncated)?;
+    let signed_parts = &body[EPH_LEN..];
+
+    let salt = recipient.public().hash();
+    let shared = recipient.diffie_hellman(&eph_pub);
+    let (hmac_key, aes_key) = derive_keys(&shared, &salt);
 
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(&hmac_key).map_err(|_| CoreError::InvalidField)?;
@@ -136,26 +137,4 @@ fn try_decrypt_with_salt(
     Dec::new(aes_key[..].into(), iv.into())
         .decrypt_padded_vec_mut::<Pkcs7>(ct)
         .map_err(|_| CoreError::DecryptFailed)
-}
-
-/// Decrypt a Token addressed to `recipient`.
-///
-/// Tries the real RNS per-identity salt (`truncated_hash(enc_pub||sig_pub)`,
-/// i.e. `recipient.hash()`) first — this is what genuine RNS 1.4.1 tokens
-/// use — and falls back to the enc-pub-only salt used by this module's own
-/// [`encrypt`].
-pub fn decrypt(recipient: &Identity, token: &[u8]) -> Result<Vec<u8>, CoreError> {
-    if token.len() < EPH_LEN + IV_LEN + HMAC_LEN {
-        return Err(CoreError::Truncated);
-    }
-    let (body, tag) = token.split_at(token.len() - HMAC_LEN);
-    let eph_pub: [u8; 32] = body[..EPH_LEN].try_into().map_err(|_| CoreError::Truncated)?;
-    let signed_parts = &body[EPH_LEN..];
-
-    let public = recipient.public();
-    let identity_salt = public.hash();
-    let enc_pub_salt = truncated_hash(&public.enc_pub);
-
-    try_decrypt_with_salt(recipient, &eph_pub, signed_parts, tag, &identity_salt)
-        .or_else(|_| try_decrypt_with_salt(recipient, &eph_pub, signed_parts, tag, &enc_pub_salt))
 }

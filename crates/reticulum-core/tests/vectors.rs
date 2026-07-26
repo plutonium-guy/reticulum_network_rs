@@ -80,10 +80,11 @@ fn token_roundtrip() {
     let x: [u8;32] = hexf(&idv, "prv_x25519").try_into().unwrap();
     let e: [u8;32] = hexf(&idv, "prv_ed25519").try_into().unwrap();
     let id = Identity::from_private_bytes(&x, &e);
-    let enc_pub = id.public().enc_pub;
+    let pub_id = id.public();
 
     let ephemeral = [7u8; 32];
-    let ct = token::encrypt(&enc_pub, b"roundtrip", &ephemeral);
+    let iv = [3u8; 16];
+    let ct = token::encrypt(&pub_id, b"roundtrip", &ephemeral, &iv);
     let pt = token::decrypt(&id, &ct).expect("decrypt");
     assert_eq!(pt, b"roundtrip");
 }
