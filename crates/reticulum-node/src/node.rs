@@ -2,11 +2,15 @@ use alloc::{collections::VecDeque, vec::Vec};
 use reticulum_core::{
     announce::Announce,
     destination::{destination_hash, name_hash},
-    identity::Identity,
-    packet::Packet,
+    identity::{Identity, PublicIdentity},
+    packet::{ANNOUNCE, Packet},
 };
 
-use crate::{path_table::PathTable, rng::EntropySource};
+use crate::{
+    Event, NodeError,
+    path_table::{PathEntry, PathTable},
+    rng::EntropySource,
+};
 
 #[derive(Debug)]
 struct LocalDestination {
@@ -70,6 +74,53 @@ impl Node {
 
     pub fn poll_outbound(&mut self) -> Option<(u16, Vec<u8>)> {
         self.outbound.pop_front()
+    }
+
+    pub fn handle_inbound(&mut self, bytes: &[u8], interface: u16) -> Vec<Event> {
+        let packet = match Packet::decode(bytes) {
+            Ok(packet) => packet,
+            Err(_) => return Vec::new(),
+        };
+        let dest_hash = match <[u8; 16]>::try_from(packet.dest_hash.as_slice()) {
+            Ok(dest_hash) => dest_hash,
+            Err(_) => return Vec::new(),
+        };
+        match packet.packet_type {
+            ANNOUNCE => self.handle_announce(&packet, &dest_hash, interface),
+            _ => Vec::new(),
+        }
+    }
+
+    fn handle_announce(
+        &mut self,
+        packet: &Packet,
+        dest_hash: &[u8; 16],
+        interface: u16,
+    ) -> Vec<Event> {
+        let announce = match Announce::parse(&packet.data) {
+            Ok(announce) => announce,
+            Err(_) => return Vec::new(),
+        };
+        if let Err(error) = announce.verify(dest_hash) {
+            return alloc::vec![Event::Error(NodeError::Core(error))];
+        }
+        let public = match PublicIdentity::from_bytes(&announce.public) {
+            Ok(public) => public,
+            Err(error) => return alloc::vec![Event::Error(NodeError::Core(error))],
+        };
+        self.paths.insert(
+            *dest_hash,
+            PathEntry {
+                interface,
+                hops: packet.hops,
+                public,
+                ratchet: None,
+            },
+        );
+        alloc::vec![Event::Announce {
+            dest_hash: *dest_hash,
+            hops: packet.hops,
+        }]
     }
 
     pub fn local_destinations(&self) -> impl Iterator<Item = [u8; 16]> + '_ {
