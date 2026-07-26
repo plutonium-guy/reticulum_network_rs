@@ -3,7 +3,8 @@ use reticulum_core::{
     announce::Announce,
     destination::{destination_hash, name_hash},
     identity::{Identity, PublicIdentity},
-    packet::{ANNOUNCE, Packet},
+    packet::{ANNOUNCE, DATA, Packet},
+    token,
 };
 
 use crate::{
@@ -87,6 +88,7 @@ impl Node {
         };
         match packet.packet_type {
             ANNOUNCE => self.handle_announce(&packet, &dest_hash, interface),
+            DATA => self.handle_data(&packet, &dest_hash),
             _ => Vec::new(),
         }
     }
@@ -121,6 +123,23 @@ impl Node {
             dest_hash: *dest_hash,
             hops: packet.hops,
         }]
+    }
+
+    fn handle_data(&self, packet: &Packet, dest_hash: &[u8; 16]) -> Vec<Event> {
+        if !self
+            .locals
+            .iter()
+            .any(|local| &local.dest_hash == dest_hash)
+        {
+            return Vec::new();
+        }
+        match token::decrypt(&self.identity, &packet.data) {
+            Ok(plaintext) => alloc::vec![Event::Message {
+                dest_hash: *dest_hash,
+                plaintext,
+            }],
+            Err(error) => alloc::vec![Event::Error(NodeError::Core(error))],
+        }
     }
 
     pub fn local_destinations(&self) -> impl Iterator<Item = [u8; 16]> + '_ {

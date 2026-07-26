@@ -40,3 +40,27 @@ fn node_learns_path_from_announce() {
     }
     assert!(receiver.knows_path(&dest_hash));
 }
+
+#[test]
+fn node_decrypts_data_to_local_destination() {
+    use reticulum_core::{packet::Packet, token};
+
+    let mut receiver = Node::new(Identity::from_private_bytes(&[10u8; 32], &[11u8; 32]));
+    let dest_hash = receiver.register_single_destination("chat", &["v1"]);
+    let recipient = Identity::from_private_bytes(&[10u8; 32], &[11u8; 32]).public();
+    let ciphertext = token::encrypt(&recipient, b"secret", &[9u8; 32], &[3u8; 16]);
+    let packet = Packet::data_single(&dest_hash, ciphertext);
+
+    let events = receiver.handle_inbound(&packet.encode(), 0);
+    assert_eq!(events.len(), 1);
+    match &events[0] {
+        reticulum_node::Event::Message {
+            dest_hash: received,
+            plaintext,
+        } => {
+            assert_eq!(*received, dest_hash);
+            assert_eq!(plaintext, b"secret");
+        }
+        other => panic!("expected Message, got {other:?}"),
+    }
+}
