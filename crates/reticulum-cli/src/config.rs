@@ -14,6 +14,8 @@ use zeroize::Zeroize;
 #[serde(default)]
 pub struct Config {
     pub tcp_addr: String,
+    pub tcp_peers: Vec<String>,
+    pub transport_enabled: bool,
     pub identity_path: PathBuf,
     pub app_name: String,
     pub aspects: Vec<String>,
@@ -25,6 +27,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             tcp_addr: "127.0.0.1:4242".to_owned(),
+            tcp_peers: Vec::new(),
+            transport_enabled: false,
             identity_path: PathBuf::from("reticulum.identity"),
             app_name: "reticulum_rust".to_owned(),
             aspects: vec!["message".to_owned()],
@@ -58,6 +62,19 @@ impl Config {
         if let Ok(value) = std::env::var("RETICULUM_TCP_ADDR") {
             self.tcp_addr = value;
         }
+        if let Ok(value) = std::env::var("RETICULUM_TCP_PEERS") {
+            self.tcp_peers = value
+                .split(',')
+                .map(str::trim)
+                .filter(|peer| !peer.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+        if let Ok(value) = std::env::var("RETICULUM_TRANSPORT_ENABLED")
+            && let Ok(enabled) = value.parse()
+        {
+            self.transport_enabled = enabled;
+        }
         if let Ok(value) = std::env::var("RETICULUM_IDENTITY_PATH") {
             self.identity_path = PathBuf::from(value);
         }
@@ -79,6 +96,14 @@ impl Config {
             && let Ok(seconds) = value.parse()
         {
             self.announce_interval_secs = seconds;
+        }
+    }
+
+    pub fn peer_addresses(&self) -> Vec<&str> {
+        if self.tcp_peers.is_empty() {
+            vec![self.tcp_addr.as_str()]
+        } else {
+            self.tcp_peers.iter().map(String::as_str).collect()
         }
     }
 }
@@ -159,6 +184,8 @@ mod tests {
             &path,
             r#"
 tcp_addr = "localhost:5252"
+tcp_peers = ["localhost:5253", "localhost:5254"]
+transport_enabled = true
 identity_path = "test.identity"
 app_name = "chat"
 aspects = ["v1", "messages"]
@@ -168,6 +195,11 @@ app_data = "hello"
         .unwrap();
         let config = Config::load(Some(&path)).unwrap();
         assert_eq!(config.tcp_addr, "localhost:5252");
+        assert_eq!(
+            config.peer_addresses(),
+            ["localhost:5253", "localhost:5254"]
+        );
+        assert!(config.transport_enabled);
         assert_eq!(config.aspects, ["v1", "messages"]);
     }
 }

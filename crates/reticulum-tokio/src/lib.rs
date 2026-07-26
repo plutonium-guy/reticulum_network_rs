@@ -1,6 +1,7 @@
 pub mod driver;
 pub mod tcp;
 
+use reticulum_node::clock::Clock;
 use reticulum_node::rng::EntropySource;
 
 /// Production entropy source backed by the operating system CSPRNG.
@@ -9,6 +10,19 @@ pub struct OsEntropy;
 impl EntropySource for OsEntropy {
     fn fill(&mut self, out: &mut [u8]) {
         getrandom::getrandom(out).expect("operating system entropy is unavailable");
+    }
+}
+
+/// Production clock adapter for protocol expiry and freshness decisions.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now_secs(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .unwrap_or_default()
     }
 }
 

@@ -5,6 +5,7 @@ use std::{error::Error, io, path::PathBuf, time::Duration};
 use config::{Config, save_or_create_identity};
 use reticulum_node::{Event, node::Node};
 use reticulum_tokio::{
+    SystemClock,
     driver::{Driver, DriverHandle},
     tcp::TcpClientInterface,
 };
@@ -33,13 +34,22 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let mode = parse_mode(&args)?;
     let config = Config::load(config_path.as_deref())?;
     let identity = save_or_create_identity(&config.identity_path)?;
-    let mut node = Node::new(identity);
+    let mut node = Node::with_clock(identity, SystemClock);
+    if config.transport_enabled {
+        node.enable_transport();
+    }
     let aspect_refs: Vec<&str> = config.aspects.iter().map(String::as_str).collect();
     let local_dest = node.register_single_destination(&config.app_name, &aspect_refs);
 
-    let interface = TcpClientInterface::connect(&config.tcp_addr).await?;
+    let mut interfaces = Vec::new();
+    for (index, address) in config.peer_addresses().into_iter().enumerate() {
+        let interface_id = u16::try_from(index).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "too many TCP peer interfaces")
+        })?;
+        interfaces.push((interface_id, TcpClientInterface::connect(address).await?));
+    }
     let (events_tx, mut events_rx) = mpsc::channel(64);
-    let (driver, handle) = Driver::new(node, interface, events_tx);
+    let (driver, handle) = Driver::new_multi(node, interfaces, events_tx);
     let driver_task = tokio::spawn(driver.run());
     handle
         .announce_all(config.app_data.as_bytes())
