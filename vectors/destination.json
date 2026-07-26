@@ -1,0 +1,10 @@
+{
+  "app_name": "example_app",
+  "aspects": [
+    "messaging",
+    "user"
+  ],
+  "dest_hash": "191fa5cf057abdf3e13fef2f24412625",
+  "identity_hash": "bdf703fb7f1e2f4cbbfcf38472961d28",
+  "name_hash": "eb6e6b4abd84d7d2420c"
+}
