@@ -1,4 +1,4 @@
-use crate::{identity::PublicIdentity, CoreError};
+use crate::{CoreError, identity::PublicIdentity};
 use alloc::vec::Vec;
 
 const PUB_LEN: usize = 64;

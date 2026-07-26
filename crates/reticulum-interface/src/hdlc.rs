@@ -41,6 +41,8 @@ pub fn deframe(framed: &[u8]) -> Option<Vec<u8>> {
             out.push(b);
         }
     }
-    if esc { return None; } // dangling escape
+    if esc {
+        return None;
+    } // dangling escape
     Some(out)
 }

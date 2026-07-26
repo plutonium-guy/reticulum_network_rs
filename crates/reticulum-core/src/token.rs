@@ -32,10 +32,10 @@
 //! nodes, and vice versa.
 
 use crate::{
-    identity::{Identity, PublicIdentity},
     CoreError,
+    identity::{Identity, PublicIdentity},
 };
-use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, BlockEncryptMut, KeyIvInit};
+use aes::cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::Pkcs7};
 use alloc::vec::Vec;
 use hkdf::Hkdf;
 use hmac::{Mac, SimpleHmac};
@@ -61,7 +61,8 @@ const SALT_LEN: usize = 16; // RNS TRUNCATED_HASHLENGTH / 8
 fn derive_keys(shared: &[u8; 32], salt: &[u8; SALT_LEN]) -> ([u8; HMAC_LEN], [u8; KEY_LEN]) {
     let hk = Hkdf::<Sha256>::new(Some(salt), shared);
     let mut okm = [0u8; HMAC_LEN + KEY_LEN];
-    hk.expand(&[], &mut okm).expect("hkdf output length is valid");
+    hk.expand(&[], &mut okm)
+        .expect("hkdf output length is valid");
     let mut hmac_key = [0u8; HMAC_LEN];
     let mut aes_key = [0u8; KEY_LEN];
     hmac_key.copy_from_slice(&okm[..HMAC_LEN]);
@@ -90,16 +91,14 @@ pub fn encrypt(
     let salt = recipient.hash();
     let (hmac_key, aes_key) = derive_keys(&shared, &salt);
 
-    let ct =
-        Enc::new(aes_key[..].into(), iv[..].into()).encrypt_padded_vec_mut::<Pkcs7>(plaintext);
+    let ct = Enc::new(aes_key[..].into(), iv[..].into()).encrypt_padded_vec_mut::<Pkcs7>(plaintext);
 
     // RNS Token.encrypt signs (iv || ciphertext) only.
     let mut signed_parts = Vec::with_capacity(IV_LEN + ct.len());
     signed_parts.extend_from_slice(iv);
     signed_parts.extend_from_slice(&ct);
 
-    let mut mac =
-        <HmacSha256 as Mac>::new_from_slice(&hmac_key).expect("hmac key length is valid");
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(&hmac_key).expect("hmac key length is valid");
     mac.update(&signed_parts);
     let tag = mac.finalize().into_bytes();
 
@@ -120,7 +119,9 @@ pub fn decrypt(recipient: &Identity, token: &[u8]) -> Result<Vec<u8>, CoreError>
         return Err(CoreError::Truncated);
     }
     let (body, tag) = token.split_at(token.len() - HMAC_LEN);
-    let eph_pub: [u8; 32] = body[..EPH_LEN].try_into().map_err(|_| CoreError::Truncated)?;
+    let eph_pub: [u8; 32] = body[..EPH_LEN]
+        .try_into()
+        .map_err(|_| CoreError::Truncated)?;
     let signed_parts = &body[EPH_LEN..];
 
     let salt = recipient.public().hash();
@@ -130,7 +131,8 @@ pub fn decrypt(recipient: &Identity, token: &[u8]) -> Result<Vec<u8>, CoreError>
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(&hmac_key).map_err(|_| CoreError::InvalidField)?;
     mac.update(signed_parts);
-    mac.verify_slice(tag).map_err(|_| CoreError::DecryptFailed)?;
+    mac.verify_slice(tag)
+        .map_err(|_| CoreError::DecryptFailed)?;
 
     let iv = &signed_parts[..IV_LEN];
     let ct = &signed_parts[IV_LEN..];

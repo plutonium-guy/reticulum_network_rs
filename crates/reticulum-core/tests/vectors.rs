@@ -45,14 +45,18 @@ use reticulum_core::destination::{destination_hash, name_hash};
 fn destination_hashes_match_rns() {
     let v = load("destination.json");
     let app = v["app_name"].as_str().unwrap();
-    let aspects: Vec<String> = v["aspects"].as_array().unwrap()
-        .iter().map(|a| a.as_str().unwrap().to_string()).collect();
+    let aspects: Vec<String> = v["aspects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap().to_string())
+        .collect();
     let aspect_refs: Vec<&str> = aspects.iter().map(|s| s.as_str()).collect();
 
     let nh = name_hash(app, &aspect_refs);
     assert_eq!(nh.to_vec(), hexf(&v, "name_hash"));
 
-    let ih: [u8;16] = hexf(&v, "identity_hash").try_into().unwrap();
+    let ih: [u8; 16] = hexf(&v, "identity_hash").try_into().unwrap();
     let dh = destination_hash(&nh, &ih);
     assert_eq!(dh.to_vec(), hexf(&v, "dest_hash"));
 }
@@ -62,8 +66,8 @@ use reticulum_core::token;
 #[test]
 fn token_decrypts_rns_vector() {
     let idv = load("identity.json");
-    let x: [u8;32] = hexf(&idv, "prv_x25519").try_into().unwrap();
-    let e: [u8;32] = hexf(&idv, "prv_ed25519").try_into().unwrap();
+    let x: [u8; 32] = hexf(&idv, "prv_x25519").try_into().unwrap();
+    let e: [u8; 32] = hexf(&idv, "prv_ed25519").try_into().unwrap();
     let id = Identity::from_private_bytes(&x, &e);
 
     let tv = load("token.json");
@@ -77,8 +81,8 @@ fn token_decrypts_rns_vector() {
 #[test]
 fn token_roundtrip() {
     let idv = load("identity.json");
-    let x: [u8;32] = hexf(&idv, "prv_x25519").try_into().unwrap();
-    let e: [u8;32] = hexf(&idv, "prv_ed25519").try_into().unwrap();
+    let x: [u8; 32] = hexf(&idv, "prv_x25519").try_into().unwrap();
+    let e: [u8; 32] = hexf(&idv, "prv_ed25519").try_into().unwrap();
     let id = Identity::from_private_bytes(&x, &e);
     let pub_id = id.public();
 

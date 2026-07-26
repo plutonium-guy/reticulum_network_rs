@@ -247,6 +247,7 @@ name = "reticulum-interface"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "serde_json",
 ]
 
 [[package]]

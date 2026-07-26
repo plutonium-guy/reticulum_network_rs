@@ -1,4 +1,4 @@
-use crate::{hash::truncated_hash, CoreError};
+use crate::{CoreError, hash::truncated_hash};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
 
@@ -9,12 +9,17 @@ pub struct PublicIdentity {
 
 impl PublicIdentity {
     pub fn from_bytes(b: &[u8]) -> Result<Self, CoreError> {
-        if b.len() != 64 { return Err(CoreError::Truncated); }
+        if b.len() != 64 {
+            return Err(CoreError::Truncated);
+        }
         let mut enc = [0u8; 32];
         let mut sig = [0u8; 32];
         enc.copy_from_slice(&b[..32]);
         sig.copy_from_slice(&b[32..64]);
-        Ok(Self { enc_pub: enc, sig_pub: sig })
+        Ok(Self {
+            enc_pub: enc,
+            sig_pub: sig,
+        })
     }
 
     pub fn to_bytes(&self) -> [u8; 64] {
@@ -29,10 +34,10 @@ impl PublicIdentity {
     }
 
     pub fn verify(&self, msg: &[u8], sig: &[u8; 64]) -> Result<(), CoreError> {
-        let vk = VerifyingKey::from_bytes(&self.sig_pub)
-            .map_err(|_| CoreError::InvalidField)?;
+        let vk = VerifyingKey::from_bytes(&self.sig_pub).map_err(|_| CoreError::InvalidField)?;
         let signature = Signature::from_bytes(sig);
-        vk.verify(msg, &signature).map_err(|_| CoreError::BadSignature)
+        vk.verify(msg, &signature)
+            .map_err(|_| CoreError::BadSignature)
     }
 }
 
@@ -66,7 +71,9 @@ impl Identity {
 
     #[allow(dead_code)]
     pub(crate) fn diffie_hellman(&self, peer_enc_pub: &[u8; 32]) -> [u8; 32] {
-        self.enc_prv.diffie_hellman(&XPublic::from(*peer_enc_pub)).to_bytes()
+        self.enc_prv
+            .diffie_hellman(&XPublic::from(*peer_enc_pub))
+            .to_bytes()
     }
 }
 
