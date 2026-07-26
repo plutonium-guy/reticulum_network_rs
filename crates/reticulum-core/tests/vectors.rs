@@ -56,3 +56,34 @@ fn destination_hashes_match_rns() {
     let dh = destination_hash(&nh, &ih);
     assert_eq!(dh.to_vec(), hexf(&v, "dest_hash"));
 }
+
+use reticulum_core::token;
+
+#[test]
+fn token_decrypts_rns_vector() {
+    let idv = load("identity.json");
+    let x: [u8;32] = hexf(&idv, "prv_x25519").try_into().unwrap();
+    let e: [u8;32] = hexf(&idv, "prv_ed25519").try_into().unwrap();
+    let id = Identity::from_private_bytes(&x, &e);
+
+    let tv = load("token.json");
+    let token_bytes = hexf(&tv, "token");
+    let expected = hexf(&tv, "plaintext");
+
+    let out = token::decrypt(&id, &token_bytes).expect("decrypt");
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn token_roundtrip() {
+    let idv = load("identity.json");
+    let x: [u8;32] = hexf(&idv, "prv_x25519").try_into().unwrap();
+    let e: [u8;32] = hexf(&idv, "prv_ed25519").try_into().unwrap();
+    let id = Identity::from_private_bytes(&x, &e);
+    let enc_pub = id.public().enc_pub;
+
+    let ephemeral = [7u8; 32];
+    let ct = token::encrypt(&enc_pub, b"roundtrip", &ephemeral);
+    let pt = token::decrypt(&id, &ct).expect("decrypt");
+    assert_eq!(pt, b"roundtrip");
+}
