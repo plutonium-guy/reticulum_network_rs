@@ -74,8 +74,8 @@ impl<C: Clock> Node<C> {
         &self.clock
     }
 
-    pub fn enable_transport(&mut self) {
-        self.transport_enabled = true;
+    pub fn enable_transport(&mut self, enabled: bool) {
+        self.transport_enabled = enabled;
     }
 
     pub fn register_interface(&mut self, interface: u16) {
@@ -163,9 +163,12 @@ impl<C: Clock> Node<C> {
         let ciphertext = token::encrypt(&public, plaintext, &ephemeral, &iv);
         let mut packet = Packet::data_single(dest_hash, ciphertext);
         if hops > 1 {
+            let Some(next_hop_transport_id) = next_hop_transport_id else {
+                return Err(NodeError::Unknown);
+            };
             packet.header_type = HEADER_2;
             packet.propagation = TRANSPORT;
-            packet.transport_id = next_hop_transport_id;
+            packet.transport_id = Some(next_hop_transport_id);
         }
         self.outbound.push_back((interface, packet.encode()));
         Ok(())
@@ -247,7 +250,7 @@ impl<C: Clock> Node<C> {
         let next_hop_transport_id = if packet.header_type == HEADER_2 {
             packet.transport_id
         } else {
-            *dest_hash
+            None
         };
         let accepted = self.paths.update(
             *dest_hash,
@@ -273,7 +276,7 @@ impl<C: Clock> Node<C> {
             let mut forwarded = packet.clone();
             forwarded.header_type = HEADER_2;
             forwarded.propagation = TRANSPORT;
-            forwarded.transport_id = self.identity.hash();
+            forwarded.transport_id = Some(self.identity.hash());
             let encoded = forwarded.encode();
             for outbound_interface in &self.interfaces {
                 if *outbound_interface != interface {
@@ -322,7 +325,7 @@ impl<C: Clock> Node<C> {
         }
         if requester.is_some_and(|requester| {
             path.as_ref()
-                .is_some_and(|path| path.next_hop_transport_id == requester)
+                .is_some_and(|path| path.next_hop_transport_id == Some(requester))
         }) {
             return;
         }
@@ -334,19 +337,19 @@ impl<C: Clock> Node<C> {
             response.header_type = HEADER_1;
             response.propagation = BROADCAST;
             response.hops = 0;
-            response.transport_id = [0u8; 16];
+            response.transport_id = None;
         } else if let Some(path) = path {
             response.header_type = HEADER_2;
             response.propagation = TRANSPORT;
             response.hops = path.hops;
-            response.transport_id = self.identity.hash();
+            response.transport_id = Some(self.identity.hash());
         }
         self.outbound.push_back((interface, response.encode()));
     }
 
     fn handle_data(&mut self, packet: &Packet, dest_hash: &[u8; 16], interface: u16) -> Vec<Event> {
         if packet.header_type == HEADER_2
-            && (!self.transport_enabled || packet.transport_id != self.identity.hash())
+            && (!self.transport_enabled || packet.transport_id != Some(self.identity.hash()))
         {
             return Vec::new();
         }
@@ -364,11 +367,14 @@ impl<C: Clock> Node<C> {
                 {
                     let mut forwarded = packet.clone();
                     if path.hops > 1 {
-                        forwarded.transport_id = path.next_hop_transport_id;
+                        let Some(next_hop_transport_id) = path.next_hop_transport_id else {
+                            return Vec::new();
+                        };
+                        forwarded.transport_id = Some(next_hop_transport_id);
                     } else {
                         forwarded.header_type = HEADER_1;
                         forwarded.propagation = BROADCAST;
-                        forwarded.transport_id = [0u8; 16];
+                        forwarded.transport_id = None;
                     }
                     self.outbound
                         .push_back((path.interface, forwarded.encode()));

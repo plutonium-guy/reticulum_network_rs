@@ -43,7 +43,7 @@ fn transport_propagates_valid_announce_to_other_interfaces_as_header2() {
     let relay_identity = Identity::from_private_bytes(&[5u8; 32], &[6u8; 32]);
     let relay_transport_id = relay_identity.hash();
     let mut relay = Node::new(relay_identity);
-    relay.enable_transport();
+    relay.enable_transport(true);
     relay.register_interface(1);
     relay.register_interface(2);
 
@@ -57,7 +57,7 @@ fn transport_propagates_valid_announce_to_other_interfaces_as_header2() {
     let packet = Packet::decode(&forwarded).unwrap();
     assert_eq!(packet.header_type, HEADER_2);
     assert_eq!(packet.propagation, TRANSPORT);
-    assert_eq!(packet.transport_id, relay_transport_id);
+    assert_eq!(packet.transport_id, Some(relay_transport_id));
     assert_eq!(packet.dest_hash, dest_hash);
     assert_eq!(packet.hops, 1);
     assert!(relay.poll_outbound().is_none());
@@ -72,7 +72,7 @@ fn transport_suppresses_duplicate_announces_and_hop_limit_propagation() {
     let (_, announce) = origin.poll_outbound().unwrap();
 
     let mut relay = Node::new(Identity::from_private_bytes(&[5u8; 32], &[6u8; 32]));
-    relay.enable_transport();
+    relay.enable_transport(true);
     relay.register_interface(1);
     relay.register_interface(2);
     relay.handle_inbound(&announce, 1);
@@ -99,7 +99,7 @@ fn transport_routes_header2_data_to_learned_next_hop() {
     let relay_identity = Identity::from_private_bytes(&[20u8; 32], &[21u8; 32]);
     let relay_id = relay_identity.hash();
     let mut relay = Node::new(relay_identity);
-    relay.enable_transport();
+    relay.enable_transport(true);
     relay.register_interface(10);
     relay.register_interface(20);
     relay.handle_inbound(&announce, 20);
@@ -115,7 +115,7 @@ fn transport_routes_header2_data_to_learned_next_hop() {
     let (_, routed_data) = source.poll_outbound().unwrap();
     let packet = Packet::decode(&routed_data).unwrap();
     assert_eq!(packet.header_type, HEADER_2);
-    assert_eq!(packet.transport_id, relay_id);
+    assert_eq!(packet.transport_id, Some(relay_id));
 
     assert!(relay.handle_inbound(&routed_data, 10).is_empty());
     let (toward_destination, delivered_data) = relay.poll_outbound().unwrap();
@@ -138,13 +138,13 @@ fn transport_routes_header2_data_to_learned_next_hop() {
 #[test]
 fn transport_drops_header2_data_for_another_transport_id() {
     let mut relay = Node::new(Identity::from_private_bytes(&[20u8; 32], &[21u8; 32]));
-    relay.enable_transport();
+    relay.enable_transport(true);
     relay.register_interface(1);
     relay.register_interface(2);
     let mut packet = Packet::data_single(&[7u8; 16], vec![1, 2, 3]);
     packet.header_type = HEADER_2;
     packet.propagation = TRANSPORT;
-    packet.transport_id = [99u8; 16];
+    packet.transport_id = Some([99u8; 16]);
 
     assert!(relay.handle_inbound(&packet.encode(), 1).is_empty());
     assert!(relay.poll_outbound().is_none());
@@ -153,7 +153,7 @@ fn transport_drops_header2_data_for_another_transport_id() {
 #[test]
 fn node_broadcasts_path_request_with_csprng_tag() {
     let mut node = Node::new(Identity::from_private_bytes(&[1u8; 32], &[2u8; 32]));
-    node.enable_transport();
+    node.enable_transport(true);
     node.register_interface(4);
     node.register_interface(5);
     let mut rng = SeededRng::new(77);
@@ -202,7 +202,7 @@ fn transport_answers_path_request_for_known_route() {
     let relay_identity = Identity::from_private_bytes(&[20u8; 32], &[21u8; 32]);
     let relay_id = relay_identity.hash();
     let mut relay = Node::new(relay_identity);
-    relay.enable_transport();
+    relay.enable_transport(true);
     relay.register_interface(1);
     relay.register_interface(2);
     relay.handle_inbound(&announce, 2);
@@ -214,7 +214,7 @@ fn transport_answers_path_request_for_known_route() {
     assert_eq!(interface, 1);
     let response = Packet::decode(&response).unwrap();
     assert_eq!(response.header_type, HEADER_2);
-    assert_eq!(response.transport_id, relay_id);
+    assert_eq!(response.transport_id, Some(relay_id));
     assert_eq!(response.dest_hash, destination);
     assert_eq!(response.context, PATH_RESPONSE);
 }

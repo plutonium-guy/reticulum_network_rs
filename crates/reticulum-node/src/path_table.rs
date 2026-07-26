@@ -4,7 +4,7 @@ use reticulum_core::identity::PublicIdentity;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PathEntry {
     pub interface: u16,
-    pub next_hop_transport_id: [u8; 16],
+    pub next_hop_transport_id: Option<[u8; 16]>,
     pub hops: u8,
     pub expires_at: u64,
     pub timestamp: u64,
@@ -70,7 +70,7 @@ mod tests {
     fn entry(identity: &Identity, hops: u8, timestamp: u64, expires_at: u64) -> PathEntry {
         PathEntry {
             interface: u16::from(hops),
-            next_hop_transport_id: [hops; 16],
+            next_hop_transport_id: Some([hops; 16]),
             hops,
             expires_at,
             timestamp,
@@ -88,7 +88,7 @@ mod tests {
             dest_hash,
             PathEntry {
                 interface: 3,
-                next_hop_transport_id: [9u8; 16],
+                next_hop_transport_id: Some([9u8; 16]),
                 hops: 0,
                 expires_at: 100,
                 timestamp: 1,

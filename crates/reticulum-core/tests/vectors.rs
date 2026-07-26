@@ -131,7 +131,10 @@ fn packet_header2_roundtrips_rns_vector_without_losing_transport_id() {
         packet.header_type as u64,
         vector["header_type"].as_u64().unwrap()
     );
-    assert_eq!(packet.transport_id.to_vec(), hexf(&vector, "transport_id"));
+    assert_eq!(
+        packet.transport_id.unwrap().to_vec(),
+        hexf(&vector, "transport_id")
+    );
     assert_eq!(packet.dest_hash, hexf(&vector, "dest_hash"));
     assert_eq!(packet.encode(), raw);
 }
@@ -235,7 +238,7 @@ fn packet_flags_roundtrip_self_consistent() {
         dest_type: 2,
         packet_type: 3,
         hops: 7,
-        transport_id: [0u8; 16],
+        transport_id: None,
         dest_hash: (0u8..16).collect(),
         context: 5,
         data: vec![9, 9, 9],

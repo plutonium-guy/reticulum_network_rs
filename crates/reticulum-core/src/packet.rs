@@ -25,8 +25,8 @@ pub struct Packet {
     pub context_flag: bool,
     pub ifac: bool,
     pub hops: u8,
-    /// Next-hop transport identity for HEADER_2 packets; zeroed for HEADER_1.
-    pub transport_id: [u8; 16],
+    /// Next-hop transport identity for HEADER_2 packets.
+    pub transport_id: Option<[u8; 16]>,
     pub dest_hash: Vec<u8>,
     pub context: u8,
     pub data: Vec<u8>,
@@ -44,7 +44,7 @@ impl Packet {
             dest_type: Self::SINGLE,
             packet_type: ANNOUNCE,
             hops: 0,
-            transport_id: [0u8; 16],
+            transport_id: None,
             dest_hash: dest_hash.to_vec(),
             context: 0,
             data: payload,
@@ -60,7 +60,7 @@ impl Packet {
             dest_type: Self::SINGLE,
             packet_type: DATA,
             hops: 0,
-            transport_id: [0u8; 16],
+            transport_id: None,
             dest_hash: dest_hash.to_vec(),
             context: 0,
             data: ciphertext,
@@ -95,7 +95,7 @@ impl Packet {
             dest_type: PLAIN,
             packet_type: DATA,
             hops: 0,
-            transport_id: [0u8; 16],
+            transport_id: None,
             dest_hash: Self::path_request_destination_hash().to_vec(),
             context: 0,
             data,
@@ -134,11 +134,13 @@ impl Packet {
             return Err(CoreError::Truncated);
         }
         let transport_id = if header_type == HEADER_2 {
-            bytes[idx..idx + ADDR_LEN]
-                .try_into()
-                .map_err(|_| CoreError::Truncated)?
+            Some(
+                bytes[idx..idx + ADDR_LEN]
+                    .try_into()
+                    .map_err(|_| CoreError::Truncated)?,
+            )
         } else {
-            [0u8; 16]
+            None
         };
         let dest_hash = if header_type == HEADER_2 {
             bytes[idx + ADDR_LEN..idx + 2 * ADDR_LEN].to_vec()
@@ -181,8 +183,10 @@ impl Packet {
             Vec::with_capacity(2 + transport_len + self.dest_hash.len() + 1 + self.data.len());
         out.push(flags);
         out.push(self.hops);
-        if self.header_type == HEADER_2 {
-            out.extend_from_slice(&self.transport_id);
+        if self.header_type == HEADER_2
+            && let Some(transport_id) = self.transport_id
+        {
+            out.extend_from_slice(&transport_id);
         }
         out.extend_from_slice(&self.dest_hash);
         out.push(self.context);

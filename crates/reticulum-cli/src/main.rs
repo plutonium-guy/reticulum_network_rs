@@ -36,7 +36,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let identity = save_or_create_identity(&config.identity_path)?;
     let mut node = Node::with_clock(identity, SystemClock);
     if config.transport_enabled {
-        node.enable_transport();
+        node.enable_transport(true);
     }
     let aspect_refs: Vec<&str> = config.aspects.iter().map(String::as_str).collect();
     let local_dest = node.register_single_destination(&config.app_name, &aspect_refs);

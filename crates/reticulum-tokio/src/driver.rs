@@ -312,7 +312,7 @@ mod tests {
         let mut a_node = Node::new(Identity::from_private_bytes(&[1u8; 32], &[2u8; 32]));
         a_node.register_single_destination("chat", &["a"]);
         let mut relay_node = Node::new(Identity::from_private_bytes(&[3u8; 32], &[4u8; 32]));
-        relay_node.enable_transport();
+        relay_node.enable_transport(true);
         let mut c_node = Node::new(Identity::from_private_bytes(&[5u8; 32], &[6u8; 32]));
         let c_dest = c_node.register_single_destination("chat", &["c"]);
 
