@@ -109,3 +109,21 @@ fn packet_roundtrips_rns_vector() {
 fn packet_decode_rejects_short_input() {
     assert!(Packet::decode(&[0x00]).is_err());
 }
+
+#[test]
+fn packet_flags_roundtrip_self_consistent() {
+    let p = Packet {
+        ifac: true,
+        header_type: 0, // HEADER_1; HEADER_2 store is intentionally lossy
+        context_flag: true,
+        propagation: 1,
+        dest_type: 2,
+        packet_type: 3,
+        hops: 7,
+        dest_hash: (0u8..16).collect(),
+        context: 5,
+        data: vec![9, 9, 9],
+    };
+    let decoded = Packet::decode(&p.encode()).expect("decode");
+    assert_eq!(decoded, p);
+}

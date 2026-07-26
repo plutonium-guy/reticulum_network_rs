@@ -46,8 +46,7 @@ impl Packet {
         if bytes.len() < idx + addr_bytes + 1 {
             return Err(CoreError::Truncated);
         }
-        // For HEADER_2 the *destination* hash is the second address; store the
-        // full address block and expose the destination portion.
+        // HEADER_2: only the destination half of the address block is kept; the transport-ID half is discarded (revisited when transport/HEADER_2 support lands).
         let dest_hash = if header_type == HEADER_2 {
             bytes[idx + ADDR_LEN..idx + 2 * ADDR_LEN].to_vec()
         } else {
