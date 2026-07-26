@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/reticulum-core",
     "crates/reticulum-interface",
+    "crates/reticulum-node",
 ]
 
 [workspace.package]

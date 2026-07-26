@@ -1,0 +1,8 @@
+[package]
+name = "reticulum-node"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+reticulum-core = { path = "../reticulum-core" }
