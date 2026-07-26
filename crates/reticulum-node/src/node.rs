@@ -6,7 +6,7 @@ use reticulum_core::{
     announce::Announce,
     destination::{destination_hash, name_hash},
     identity::{Identity, PublicIdentity},
-    packet::{ANNOUNCE, DATA, HEADER_2, Packet, TRANSPORT},
+    packet::{ANNOUNCE, BROADCAST, DATA, HEADER_1, HEADER_2, Packet, TRANSPORT},
     token,
 };
 
@@ -123,10 +123,17 @@ impl<C: Clock> Node<C> {
         rng: &mut R,
     ) -> Result<(), NodeError> {
         self.paths.prune(self.clock.now_secs());
-        let (interface, public) = self
+        let (interface, next_hop_transport_id, hops, public) = self
             .paths
             .get(dest_hash)
-            .map(|entry| (entry.interface, entry.public.clone()))
+            .map(|entry| {
+                (
+                    entry.interface,
+                    entry.next_hop_transport_id,
+                    entry.hops,
+                    entry.public.clone(),
+                )
+            })
             .ok_or(NodeError::Unknown)?;
 
         let mut ephemeral = [0u8; 32];
@@ -134,7 +141,12 @@ impl<C: Clock> Node<C> {
         rng.fill(&mut ephemeral);
         rng.fill(&mut iv);
         let ciphertext = token::encrypt(&public, plaintext, &ephemeral, &iv);
-        let packet = Packet::data_single(dest_hash, ciphertext);
+        let mut packet = Packet::data_single(dest_hash, ciphertext);
+        if hops > 1 {
+            packet.header_type = HEADER_2;
+            packet.propagation = TRANSPORT;
+            packet.transport_id = next_hop_transport_id;
+        }
         self.outbound.push_back((interface, packet.encode()));
         Ok(())
     }
@@ -230,12 +242,32 @@ impl<C: Clock> Node<C> {
         }]
     }
 
-    fn handle_data(&self, packet: &Packet, dest_hash: &[u8; 16]) -> Vec<Event> {
+    fn handle_data(&mut self, packet: &Packet, dest_hash: &[u8; 16]) -> Vec<Event> {
+        if packet.header_type == HEADER_2
+            && (!self.transport_enabled || packet.transport_id != self.identity.hash())
+        {
+            return Vec::new();
+        }
         if !self
             .locals
             .iter()
             .any(|local| &local.dest_hash == dest_hash)
         {
+            if packet.header_type == HEADER_2 && packet.hops < PATHFINDER_MAX_HOPS {
+                self.paths.prune(self.clock.now_secs());
+                if let Some(path) = self.paths.get(dest_hash) {
+                    let mut forwarded = packet.clone();
+                    if path.hops > 1 {
+                        forwarded.transport_id = path.next_hop_transport_id;
+                    } else {
+                        forwarded.header_type = HEADER_1;
+                        forwarded.propagation = BROADCAST;
+                        forwarded.transport_id = [0u8; 16];
+                    }
+                    self.outbound
+                        .push_back((path.interface, forwarded.encode()));
+                }
+            }
             return Vec::new();
         }
         match token::decrypt(&self.identity, &packet.data) {

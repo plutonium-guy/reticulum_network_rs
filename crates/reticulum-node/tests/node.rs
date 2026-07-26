@@ -89,6 +89,65 @@ fn transport_suppresses_duplicate_announces_and_hop_limit_propagation() {
 }
 
 #[test]
+fn transport_routes_header2_data_to_learned_next_hop() {
+    let mut destination_node = Node::new(Identity::from_private_bytes(&[10u8; 32], &[11u8; 32]));
+    let destination = destination_node.register_single_destination("chat", &["three-hop"]);
+    let mut destination_rng = SeededRng::new(1);
+    destination_node.send_announce(&destination, b"", &mut destination_rng, 20);
+    let (_, announce) = destination_node.poll_outbound().unwrap();
+
+    let relay_identity = Identity::from_private_bytes(&[20u8; 32], &[21u8; 32]);
+    let relay_id = relay_identity.hash();
+    let mut relay = Node::new(relay_identity);
+    relay.enable_transport();
+    relay.register_interface(10);
+    relay.register_interface(20);
+    relay.handle_inbound(&announce, 20);
+    let (toward_source, transported_announce) = relay.poll_outbound().unwrap();
+    assert_eq!(toward_source, 10);
+
+    let mut source = Node::new(Identity::from_private_bytes(&[30u8; 32], &[31u8; 32]));
+    source.handle_inbound(&transported_announce, 30);
+    let mut source_rng = SeededRng::new(2);
+    source
+        .send_message(&destination, b"through relay", &mut source_rng)
+        .unwrap();
+    let (_, routed_data) = source.poll_outbound().unwrap();
+    let packet = Packet::decode(&routed_data).unwrap();
+    assert_eq!(packet.header_type, HEADER_2);
+    assert_eq!(packet.transport_id, relay_id);
+
+    assert!(relay.handle_inbound(&routed_data, 10).is_empty());
+    let (toward_destination, delivered_data) = relay.poll_outbound().unwrap();
+    assert_eq!(toward_destination, 20);
+    let packet = Packet::decode(&delivered_data).unwrap();
+    assert_eq!(packet.header_type, 0);
+    assert_eq!(packet.hops, 1);
+
+    let events = destination_node.handle_inbound(&delivered_data, 20);
+    assert!(matches!(
+        &events[..],
+        [reticulum_node::Event::Message { plaintext, .. }]
+            if plaintext == b"through relay"
+    ));
+}
+
+#[test]
+fn transport_drops_header2_data_for_another_transport_id() {
+    let mut relay = Node::new(Identity::from_private_bytes(&[20u8; 32], &[21u8; 32]));
+    relay.enable_transport();
+    relay.register_interface(1);
+    relay.register_interface(2);
+    let mut packet = Packet::data_single(&[7u8; 16], vec![1, 2, 3]);
+    packet.header_type = HEADER_2;
+    packet.propagation = TRANSPORT;
+    packet.transport_id = [99u8; 16];
+
+    assert!(relay.handle_inbound(&packet.encode(), 1).is_empty());
+    assert!(relay.poll_outbound().is_none());
+}
+
+#[test]
 fn node_emits_announce_packet() {
     let identity = Identity::from_private_bytes(&[1u8; 32], &[2u8; 32]);
     let mut node = Node::new(identity);
