@@ -1,0 +1,21 @@
+[package]
+name = "reticulum-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "reticulumd"
+path = "src/main.rs"
+
+[dependencies]
+reticulum-core = { path = "../reticulum-core" }
+reticulum-node = { path = "../reticulum-node" }
+reticulum-tokio = { path = "../reticulum-tokio" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+serde.workspace = true
+toml = "0.8"
+hex.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
