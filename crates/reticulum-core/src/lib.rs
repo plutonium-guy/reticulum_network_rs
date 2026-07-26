@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+pub mod hash;
+
 /// Errors returned by fallible core operations. No core function panics on
 /// untrusted input; malformed data always surfaces as one of these.
 #[derive(Debug, Clone, PartialEq, Eq)]
