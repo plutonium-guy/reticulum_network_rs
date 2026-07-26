@@ -121,7 +121,7 @@ impl Node {
         dest_hash: &[u8; 16],
         interface: u16,
     ) -> Vec<Event> {
-        let announce = match Announce::parse(&packet.data) {
+        let announce = match Announce::parse(&packet.data, packet.context_flag) {
             Ok(announce) => announce,
             Err(_) => return Vec::new(),
         };
@@ -138,7 +138,7 @@ impl Node {
                 interface,
                 hops: packet.hops,
                 public,
-                ratchet: None,
+                ratchet: announce.ratchet,
             },
         );
         alloc::vec![Event::Announce {

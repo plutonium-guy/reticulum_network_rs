@@ -67,6 +67,8 @@ import json
 import os
 import hashlib
 import importlib
+import sys
+import tempfile
 
 import RNS
 from RNS.Cryptography import Token  # RNS's Fernet-like primitive
@@ -81,9 +83,12 @@ RNS.Transport.owner = _StubOwner()
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "vectors")
 os.makedirs(OUT, exist_ok=True)
+RATCHET_ONLY = "--ratchet-only" in sys.argv
 
 
 def w(name, obj):
+    if RATCHET_ONLY and name != "announce_ratchet.json":
+        return
     with open(os.path.join(OUT, name), "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
         f.write("\n")
@@ -262,6 +267,69 @@ w(
         "random_hash": hx(random_hash),
         "signature": hx(signature),
         "app_data": hx(app_data),
+    },
+)
+
+# --- announce with ratchet ---
+ratchet_dest = RNS.Destination(
+    idty,
+    RNS.Destination.IN,
+    RNS.Destination.SINGLE,
+    "example_ratchet",
+    "messaging",
+)
+with tempfile.TemporaryDirectory() as ratchet_dir:
+    ratchet_dest.enable_ratchets(os.path.join(ratchet_dir, "ratchets"))
+    ratchet_app_data = b"ratcheted"
+    # A standalone capture has no Reticulum storage path. Suppress only the
+    # background cache persistence; it does not affect announce construction.
+    real_remember_ratchet = RNS.Identity.__dict__["_remember_ratchet"]
+    try:
+        RNS.Identity._remember_ratchet = staticmethod(lambda _dest, _ratchet: None)
+        ratchet_announce = ratchet_dest.announce(
+            app_data=ratchet_app_data, send=False
+        )
+    finally:
+        RNS.Identity._remember_ratchet = real_remember_ratchet
+    ratchet_announce.pack()
+    ratchet_raw = ratchet_announce.raw
+
+ratchet_packet = RNS.Packet(None, ratchet_raw)
+ratchet_packet.unpack()
+ratchet_data = ratchet_packet.data
+ratchet_off = 0
+ratchet_pub = ratchet_data[ratchet_off : ratchet_off + KEYSIZE]
+ratchet_off += KEYSIZE
+ratchet_name_hash = ratchet_data[
+    ratchet_off : ratchet_off + NAME_HASH_LEN
+]
+ratchet_off += NAME_HASH_LEN
+ratchet_random_hash = ratchet_data[ratchet_off : ratchet_off + 10]
+ratchet_off += 10
+ratchet_public = ratchet_data[ratchet_off : ratchet_off + 32]
+ratchet_off += 32
+ratchet_signature = ratchet_data[ratchet_off : ratchet_off + SIG_LEN]
+ratchet_off += SIG_LEN
+ratchet_parsed_app_data = ratchet_data[ratchet_off:]
+
+assert ratchet_pub == pub
+assert ratchet_name_hash == ratchet_dest.name_hash
+assert len(ratchet_public) == 32
+assert ratchet_packet.context_flag == RNS.Packet.FLAG_SET
+assert ratchet_parsed_app_data == ratchet_app_data
+
+w(
+    "announce_ratchet.json",
+    {
+        "bytes": hx(ratchet_raw),
+        "dest_hash": hx(ratchet_dest.hash),
+        "pub": hx(ratchet_pub),
+        "name_hash": hx(ratchet_name_hash),
+        "random_hash": hx(ratchet_random_hash),
+        "ratchet": hx(ratchet_public),
+        "signature": hx(ratchet_signature),
+        "app_data": hx(ratchet_app_data),
+        "context_flag": True,
     },
 )
 

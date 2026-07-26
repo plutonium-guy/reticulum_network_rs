@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 const PUB_LEN: usize = 64;
 const NAME_LEN: usize = 10;
 const RAND_LEN: usize = 10;
+const RATCHET_LEN: usize = 32;
 const SIG_LEN: usize = 64;
 const MIN: usize = PUB_LEN + NAME_LEN + RAND_LEN + SIG_LEN;
 
@@ -15,14 +16,18 @@ pub struct Announce {
     pub public: [u8; 64],
     pub name_hash: [u8; 10],
     pub random_hash: [u8; 10],
+    pub ratchet: Option<[u8; 32]>,
     pub signature: [u8; 64],
     pub app_data: Vec<u8>,
 }
 
 impl Announce {
-    /// Parses the ANNOUNCE packet *data* field (no ratchet support in M1).
-    pub fn parse(payload: &[u8]) -> Result<Announce, CoreError> {
-        if payload.len() < MIN {
+    /// Parses the ANNOUNCE packet data field.
+    ///
+    /// In RNS 1.4.1 the packet context flag indicates whether the optional
+    /// 32-byte ratchet is present.
+    pub fn parse(payload: &[u8], has_ratchet: bool) -> Result<Announce, CoreError> {
+        if payload.len() < MIN + usize::from(has_ratchet) * RATCHET_LEN {
             return Err(CoreError::Truncated);
         }
         let mut off = 0usize;
@@ -44,6 +49,17 @@ impl Announce {
             .try_into()
             .map_err(|_| CoreError::Truncated)?;
         off += RAND_LEN;
+        let ratchet = if has_ratchet {
+            let value = payload
+                .get(off..off + RATCHET_LEN)
+                .ok_or(CoreError::Truncated)?
+                .try_into()
+                .map_err(|_| CoreError::Truncated)?;
+            off += RATCHET_LEN;
+            Some(value)
+        } else {
+            None
+        };
         let signature: [u8; 64] = payload
             .get(off..off + SIG_LEN)
             .ok_or(CoreError::Truncated)?
@@ -55,6 +71,7 @@ impl Announce {
             public,
             name_hash,
             random_hash,
+            ratchet,
             signature,
             app_data,
         })
@@ -68,21 +85,26 @@ impl Announce {
         app_data: &[u8],
     ) -> Announce {
         let public = identity.public().to_bytes();
-        let signed = signed_data(dest_hash, &public, name_hash, random_hash, app_data);
+        let signed = signed_data(dest_hash, &public, name_hash, random_hash, None, app_data);
         Announce {
             public,
             name_hash: *name_hash,
             random_hash: *random_hash,
+            ratchet: None,
             signature: identity.sign(&signed),
             app_data: app_data.to_vec(),
         }
     }
 
     pub fn to_payload(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(MIN + self.app_data.len());
+        let mut out =
+            Vec::with_capacity(MIN + self.ratchet.map_or(0, |_| RATCHET_LEN) + self.app_data.len());
         out.extend_from_slice(&self.public);
         out.extend_from_slice(&self.name_hash);
         out.extend_from_slice(&self.random_hash);
+        if let Some(ratchet) = self.ratchet {
+            out.extend_from_slice(&ratchet);
+        }
         out.extend_from_slice(&self.signature);
         out.extend_from_slice(&self.app_data);
         out
@@ -92,13 +114,13 @@ impl Announce {
     ///
     /// Signed message (RNS 1.4.1, `RNS/Destination.py::announce`):
     /// `dest_hash ‖ public ‖ name_hash ‖ random_hash ‖ ratchet ‖ app_data`.
-    /// M1 does not support ratchets, so the ratchet segment is empty.
     pub fn verify(&self, dest_hash: &[u8; 16]) -> Result<(), CoreError> {
         let signed = signed_data(
             dest_hash,
             &self.public,
             &self.name_hash,
             &self.random_hash,
+            self.ratchet.as_ref(),
             &self.app_data,
         );
         let pubid = PublicIdentity::from_bytes(&self.public)?;
@@ -111,13 +133,19 @@ fn signed_data(
     public: &[u8; 64],
     name_hash: &[u8; 10],
     random_hash: &[u8; 10],
+    ratchet: Option<&[u8; 32]>,
     app_data: &[u8],
 ) -> Vec<u8> {
-    let mut signed = Vec::with_capacity(16 + PUB_LEN + NAME_LEN + RAND_LEN + app_data.len());
+    let mut signed = Vec::with_capacity(
+        16 + PUB_LEN + NAME_LEN + RAND_LEN + ratchet.map_or(0, |_| RATCHET_LEN) + app_data.len(),
+    );
     signed.extend_from_slice(dest_hash);
     signed.extend_from_slice(public);
     signed.extend_from_slice(name_hash);
     signed.extend_from_slice(random_hash);
+    if let Some(ratchet) = ratchet {
+        signed.extend_from_slice(ratchet);
+    }
     signed.extend_from_slice(app_data);
     signed
 }

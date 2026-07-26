@@ -157,7 +157,7 @@ fn announce_parses_and_verifies_rns_vector() {
     // header (flags+hops+16B dest+context) to get the payload.
     let raw = hexf(&v, "bytes");
     let payload = &raw[19..]; // 1 flags +1 hops +16 dest +1 context = 19
-    let a = Announce::parse(payload).expect("parse");
+    let a = Announce::parse(payload, false).expect("parse");
     assert_eq!(a.public.to_vec(), hexf(&v, "pub"));
     assert_eq!(a.name_hash.to_vec(), hexf(&v, "name_hash"));
     assert_eq!(a.random_hash.to_vec(), hexf(&v, "random_hash"));
@@ -185,6 +185,16 @@ fn announce_build_reproduces_rns_vector() {
     let raw = hexf(&av, "bytes");
     assert_eq!(built.to_payload(), raw[19..].to_vec());
     assert!(built.verify(&dest_hash).is_ok());
+}
+
+#[test]
+fn announce_with_ratchet_parses_and_verifies() {
+    let vector = load("announce_ratchet.json");
+    let raw = hexf(&vector, "bytes");
+    let announce = Announce::parse(&raw[19..], true).expect("parse ratchet");
+    assert_eq!(announce.ratchet.unwrap().to_vec(), hexf(&vector, "ratchet"));
+    let dest_hash: [u8; 16] = hexf(&vector, "dest_hash").try_into().unwrap();
+    assert!(announce.verify(&dest_hash).is_ok());
 }
 
 #[test]
