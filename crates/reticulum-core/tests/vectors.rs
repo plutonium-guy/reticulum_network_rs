@@ -137,6 +137,20 @@ fn packet_header2_roundtrips_rns_vector_without_losing_transport_id() {
 }
 
 #[test]
+fn path_request_constructor_matches_rns_vector() {
+    let vector = load("path_request.json");
+    let target: [u8; 16] = hexf(&vector, "target").try_into().unwrap();
+    let requester: [u8; 16] = hexf(&vector, "requester_transport_id").try_into().unwrap();
+    let tag: [u8; 16] = hexf(&vector, "tag").try_into().unwrap();
+    let packet = Packet::path_request(&target, Some(&requester), &tag);
+    assert_eq!(
+        Packet::path_request_destination_hash().to_vec(),
+        hexf(&vector, "dest_hash")
+    );
+    assert_eq!(packet.encode(), hexf(&vector, "bytes"));
+}
+
+#[test]
 fn packet_announce_constructor_matches_vector() {
     let vector = load("announce.json");
     let raw = hexf(&vector, "bytes");

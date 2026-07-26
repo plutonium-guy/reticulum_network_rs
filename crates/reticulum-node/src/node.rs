@@ -6,7 +6,9 @@ use reticulum_core::{
     announce::Announce,
     destination::{destination_hash, name_hash},
     identity::{Identity, PublicIdentity},
-    packet::{ANNOUNCE, BROADCAST, DATA, HEADER_1, HEADER_2, Packet, TRANSPORT},
+    packet::{
+        ANNOUNCE, BROADCAST, DATA, HEADER_1, HEADER_2, PATH_RESPONSE, PLAIN, Packet, TRANSPORT,
+    },
     token,
 };
 
@@ -34,6 +36,8 @@ pub struct Node<C: Clock = NoClock> {
     interfaces: Vec<u16>,
     transport_enabled: bool,
     seen_announces: BTreeMap<([u8; 16], [u8; 10]), u64>,
+    seen_path_requests: BTreeMap<([u8; 16], [u8; 16]), u64>,
+    cached_announces: BTreeMap<[u8; 16], Packet>,
     outbound: VecDeque<(u16, Vec<u8>)>,
 }
 
@@ -53,6 +57,8 @@ impl<C: Clock> Node<C> {
             interfaces: Vec::new(),
             transport_enabled: false,
             seen_announces: BTreeMap::new(),
+            seen_path_requests: BTreeMap::new(),
+            cached_announces: BTreeMap::new(),
             outbound: VecDeque::new(),
         }
     }
@@ -109,7 +115,18 @@ impl<C: Clock> Node<C> {
             app_data,
         );
         let packet = Packet::announce(dest_hash, announce.to_payload());
+        self.cached_announces.insert(*dest_hash, packet.clone());
         self.outbound.push_back((interface, packet.encode()));
+    }
+
+    pub fn request_path<R: EntropySource>(&mut self, dest_hash: &[u8; 16], rng: &mut R) {
+        let mut tag = [0u8; 16];
+        rng.fill(&mut tag);
+        let transport_id = self.transport_enabled.then(|| self.identity.hash());
+        let packet = Packet::path_request(dest_hash, transport_id.as_ref(), &tag).encode();
+        for interface in &self.interfaces {
+            self.outbound.push_back((*interface, packet.clone()));
+        }
     }
 
     pub fn poll_outbound(&mut self) -> Option<(u16, Vec<u8>)> {
@@ -164,6 +181,13 @@ impl<C: Clock> Node<C> {
             Ok(dest_hash) => dest_hash,
             Err(_) => return Vec::new(),
         };
+        if packet.packet_type == DATA
+            && packet.dest_type == PLAIN
+            && dest_hash == Packet::path_request_destination_hash()
+        {
+            self.handle_path_request(&packet, interface);
+            return Vec::new();
+        }
         match packet.packet_type {
             ANNOUNCE => self.handle_announce(&packet, &dest_hash, interface),
             DATA => self.handle_data(&packet, &dest_hash),
@@ -223,7 +247,11 @@ impl<C: Clock> Node<C> {
         if !accepted {
             return Vec::new();
         }
-        if self.transport_enabled && packet.hops < PATHFINDER_MAX_HOPS {
+        self.cached_announces.insert(*dest_hash, packet.clone());
+        if self.transport_enabled
+            && packet.hops < PATHFINDER_MAX_HOPS
+            && packet.context != PATH_RESPONSE
+        {
             let mut forwarded = packet.clone();
             forwarded.header_type = HEADER_2;
             forwarded.propagation = TRANSPORT;
@@ -240,6 +268,62 @@ impl<C: Clock> Node<C> {
             dest_hash: *dest_hash,
             hops: packet.hops,
         }]
+    }
+
+    fn handle_path_request(&mut self, packet: &Packet, interface: u16) {
+        if packet.data.len() < 32 {
+            return;
+        }
+        let Ok(target) = <[u8; 16]>::try_from(&packet.data[..16]) else {
+            return;
+        };
+        let (requester, tag_offset) = if packet.data.len() >= 48 {
+            let Ok(requester) = <[u8; 16]>::try_from(&packet.data[16..32]) else {
+                return;
+            };
+            (Some(requester), 32)
+        } else {
+            (None, 16)
+        };
+        let Ok(tag) = <[u8; 16]>::try_from(&packet.data[tag_offset..tag_offset + 16]) else {
+            return;
+        };
+        let now = self.clock.now_secs();
+        self.seen_path_requests
+            .retain(|_, expires_at| *expires_at > now);
+        if self.seen_path_requests.contains_key(&(target, tag)) {
+            return;
+        }
+        self.seen_path_requests
+            .insert((target, tag), now.saturating_add(15));
+
+        let is_local = self.locals.iter().any(|local| local.dest_hash == target);
+        let path = self.paths.get(&target).cloned();
+        if !is_local && (!self.transport_enabled || path.is_none()) {
+            return;
+        }
+        if requester.is_some_and(|requester| {
+            path.as_ref()
+                .is_some_and(|path| path.next_hop_transport_id == requester)
+        }) {
+            return;
+        }
+        let Some(mut response) = self.cached_announces.get(&target).cloned() else {
+            return;
+        };
+        response.context = PATH_RESPONSE;
+        if is_local {
+            response.header_type = HEADER_1;
+            response.propagation = BROADCAST;
+            response.hops = 0;
+            response.transport_id = [0u8; 16];
+        } else if let Some(path) = path {
+            response.header_type = HEADER_2;
+            response.propagation = TRANSPORT;
+            response.hops = path.hops;
+            response.transport_id = self.identity.hash();
+        }
+        self.outbound.push_back((interface, response.encode()));
     }
 
     fn handle_data(&mut self, packet: &Packet, dest_hash: &[u8; 16]) -> Vec<Event> {

@@ -85,12 +85,15 @@ OUT = os.path.join(os.path.dirname(__file__), "..", "vectors")
 os.makedirs(OUT, exist_ok=True)
 RATCHET_ONLY = "--ratchet-only" in sys.argv
 TRANSPORT_ONLY = "--transport-only" in sys.argv
+PATH_REQUEST_ONLY = "--path-request-only" in sys.argv
 
 
 def w(name, obj):
     if RATCHET_ONLY and name != "announce_ratchet.json":
         return
     if TRANSPORT_ONLY and name != "packet_header2.json":
+        return
+    if PATH_REQUEST_ONLY and name != "path_request.json":
         return
     with open(os.path.join(OUT, name), "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
@@ -223,6 +226,41 @@ w(
         "dest_hash": hx(dest.hash),
         "context": parsed_pkt.context,
         "data": hx(parsed_pkt.data),
+    },
+)
+
+# --- transport path request ---
+path_request_destination = RNS.Destination(
+    None,
+    RNS.Destination.OUT,
+    RNS.Destination.PLAIN,
+    RNS.Transport.APP_NAME,
+    "path",
+    "request",
+)
+requested_destination = seed("path-request/target")[:16]
+requester_transport_id = seed("path-request/requester")[:16]
+request_tag = seed("path-request/tag")[:16]
+path_request_data = requested_destination + requester_transport_id + request_tag
+path_request = RNS.Packet(
+    path_request_destination,
+    path_request_data,
+    packet_type=RNS.Packet.DATA,
+    transport_type=RNS.Transport.BROADCAST,
+    header_type=RNS.Packet.HEADER_1,
+)
+path_request.pack()
+parsed_path_request = RNS.Packet(None, path_request.raw)
+parsed_path_request.unpack()
+w(
+    "path_request.json",
+    {
+        "bytes": hx(path_request.raw),
+        "dest_hash": hx(path_request_destination.hash),
+        "target": hx(requested_destination),
+        "requester_transport_id": hx(requester_transport_id),
+        "tag": hx(request_tag),
+        "data": hx(parsed_path_request.data),
     },
 )
 

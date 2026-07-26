@@ -13,6 +13,7 @@ pub const HEADER_1: u8 = 0;
 pub const HEADER_2: u8 = 1;
 pub const BROADCAST: u8 = 0;
 pub const TRANSPORT: u8 = 1;
+pub const PATH_RESPONSE: u8 = 0x0B;
 const ADDR_LEN: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +64,41 @@ impl Packet {
             dest_hash: dest_hash.to_vec(),
             context: 0,
             data: ciphertext,
+        }
+    }
+
+    pub fn path_request_destination_hash() -> [u8; 16] {
+        let name_hash = crate::destination::name_hash("rnstransport", &["path", "request"]);
+        crate::hash::truncated_hash(&name_hash)
+    }
+
+    pub fn path_request(
+        target: &[u8; 16],
+        requester_transport_id: Option<&[u8; 16]>,
+        tag: &[u8; 16],
+    ) -> Packet {
+        let mut data = Vec::with_capacity(if requester_transport_id.is_some() {
+            48
+        } else {
+            32
+        });
+        data.extend_from_slice(target);
+        if let Some(requester) = requester_transport_id {
+            data.extend_from_slice(requester);
+        }
+        data.extend_from_slice(tag);
+        Packet {
+            ifac: false,
+            header_type: HEADER_1,
+            context_flag: false,
+            propagation: BROADCAST,
+            dest_type: PLAIN,
+            packet_type: DATA,
+            hops: 0,
+            transport_id: [0u8; 16],
+            dest_hash: Self::path_request_destination_hash().to_vec(),
+            context: 0,
+            data,
         }
     }
 

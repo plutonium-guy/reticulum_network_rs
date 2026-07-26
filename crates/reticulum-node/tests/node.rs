@@ -1,5 +1,5 @@
 use reticulum_core::identity::Identity;
-use reticulum_core::packet::{ANNOUNCE, HEADER_2, Packet, TRANSPORT};
+use reticulum_core::packet::{ANNOUNCE, HEADER_2, PATH_RESPONSE, Packet, TRANSPORT};
 use reticulum_node::clock::TestClock;
 use reticulum_node::node::Node;
 use reticulum_node::rng::SeededRng;
@@ -145,6 +145,75 @@ fn transport_drops_header2_data_for_another_transport_id() {
 
     assert!(relay.handle_inbound(&packet.encode(), 1).is_empty());
     assert!(relay.poll_outbound().is_none());
+}
+
+#[test]
+fn node_broadcasts_path_request_with_csprng_tag() {
+    let mut node = Node::new(Identity::from_private_bytes(&[1u8; 32], &[2u8; 32]));
+    node.enable_transport();
+    node.register_interface(4);
+    node.register_interface(5);
+    let mut rng = SeededRng::new(77);
+    node.request_path(&[8u8; 16], &mut rng);
+
+    let (first_interface, first) = node.poll_outbound().unwrap();
+    let (second_interface, second) = node.poll_outbound().unwrap();
+    assert_eq!((first_interface, second_interface), (4, 5));
+    assert_eq!(first, second);
+    let packet = Packet::decode(&first).unwrap();
+    assert_eq!(packet.dest_hash, Packet::path_request_destination_hash());
+    assert_eq!(&packet.data[..16], &[8u8; 16]);
+    assert_eq!(packet.data.len(), 48);
+}
+
+#[test]
+fn local_destination_answers_path_request_on_requesting_interface() {
+    let mut destination_node = Node::new(Identity::from_private_bytes(&[10u8; 32], &[11u8; 32]));
+    let destination = destination_node.register_single_destination("chat", &["path-response"]);
+    let mut rng = SeededRng::new(1);
+    destination_node.send_announce(&destination, b"metadata", &mut rng, 3);
+    destination_node.poll_outbound().unwrap();
+
+    let request = Packet::path_request(&destination, None, &[9u8; 16]);
+    assert!(
+        destination_node
+            .handle_inbound(&request.encode(), 7)
+            .is_empty()
+    );
+    let (interface, response) = destination_node.poll_outbound().unwrap();
+    assert_eq!(interface, 7);
+    let response = Packet::decode(&response).unwrap();
+    assert_eq!(response.packet_type, ANNOUNCE);
+    assert_eq!(response.dest_hash, destination);
+    assert_eq!(response.context, PATH_RESPONSE);
+}
+
+#[test]
+fn transport_answers_path_request_for_known_route() {
+    let mut origin = Node::new(Identity::from_private_bytes(&[10u8; 32], &[11u8; 32]));
+    let destination = origin.register_single_destination("chat", &["known-path"]);
+    let mut rng = SeededRng::new(1);
+    origin.send_announce(&destination, b"", &mut rng, 2);
+    let (_, announce) = origin.poll_outbound().unwrap();
+
+    let relay_identity = Identity::from_private_bytes(&[20u8; 32], &[21u8; 32]);
+    let relay_id = relay_identity.hash();
+    let mut relay = Node::new(relay_identity);
+    relay.enable_transport();
+    relay.register_interface(1);
+    relay.register_interface(2);
+    relay.handle_inbound(&announce, 2);
+    relay.poll_outbound().unwrap();
+
+    let request = Packet::path_request(&destination, Some(&[90u8; 16]), &[9u8; 16]);
+    relay.handle_inbound(&request.encode(), 1);
+    let (interface, response) = relay.poll_outbound().unwrap();
+    assert_eq!(interface, 1);
+    let response = Packet::decode(&response).unwrap();
+    assert_eq!(response.header_type, HEADER_2);
+    assert_eq!(response.transport_id, relay_id);
+    assert_eq!(response.dest_hash, destination);
+    assert_eq!(response.context, PATH_RESPONSE);
 }
 
 #[test]
