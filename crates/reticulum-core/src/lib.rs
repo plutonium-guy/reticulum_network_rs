@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+pub mod announce;
 pub mod destination;
 pub mod hash;
 pub mod identity;

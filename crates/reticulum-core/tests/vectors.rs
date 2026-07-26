@@ -110,6 +110,26 @@ fn packet_decode_rejects_short_input() {
     assert!(Packet::decode(&[0x00]).is_err());
 }
 
+use reticulum_core::announce::Announce;
+
+#[test]
+fn announce_parses_and_verifies_rns_vector() {
+    let v = load("announce.json");
+    // The announce "payload" is the data field of the ANNOUNCE packet.
+    // capture_vectors.py stores full packet bytes; slice off the 19-byte
+    // header (flags+hops+16B dest+context) to get the payload.
+    let raw = hexf(&v, "bytes");
+    let payload = &raw[19..]; // 1 flags +1 hops +16 dest +1 context = 19
+    let a = Announce::parse(payload).expect("parse");
+    assert_eq!(a.public.to_vec(), hexf(&v, "pub"));
+    assert_eq!(a.name_hash.to_vec(), hexf(&v, "name_hash"));
+    assert_eq!(a.random_hash.to_vec(), hexf(&v, "random_hash"));
+    assert_eq!(a.signature.to_vec(), hexf(&v, "signature"));
+
+    let dh: [u8; 16] = hexf(&v, "dest_hash").try_into().unwrap();
+    assert!(a.verify(&dh).is_ok());
+}
+
 #[test]
 fn packet_flags_roundtrip_self_consistent() {
     let p = Packet {
