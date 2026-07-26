@@ -40,3 +40,15 @@ Run `./tools/interop/run_transport_interop.sh`. It starts two isolated RNS
 1.4.1 transport instances, verifies that each endpoint learns the other at
 multiple hops, sends encrypted payloads in both directions, and asserts that
 the Rust relay log never contains either plaintext.
+
+Verified on 2026-07-26:
+
+```text
+PASS endpoint C -> Rust relay -> endpoint A
+PASS endpoint A -> Rust relay -> endpoint C
+PASS both endpoint path tables report multi-hop routes
+PASS relay log contains no end-to-end plaintext
+```
+
+In the acceptance run, each remote Python destination appeared at `hops: 2`
+in the opposite RNS path table.
