@@ -88,3 +88,37 @@ fn node_sends_encrypted_message_to_known_path() {
         reticulum_node::Event::Message { plaintext, .. } if plaintext == b"secret"
     ));
 }
+
+#[test]
+fn two_nodes_announce_and_message_both_directions() {
+    let mut a = Node::new(Identity::from_private_bytes(&[1u8; 32], &[2u8; 32]));
+    let mut b = Node::new(Identity::from_private_bytes(&[3u8; 32], &[4u8; 32]));
+    let a_dest = a.register_single_destination("chat", &["a"]);
+    let b_dest = b.register_single_destination("chat", &["b"]);
+    let mut a_rng = SeededRng::new(10);
+    let mut b_rng = SeededRng::new(20);
+
+    a.send_announce(&a_dest, b"", &mut a_rng, 0);
+    b.send_announce(&b_dest, b"", &mut b_rng, 0);
+    let (_, a_announce) = a.poll_outbound().unwrap();
+    let (_, b_announce) = b.poll_outbound().unwrap();
+    b.handle_inbound(&a_announce, 1);
+    a.handle_inbound(&b_announce, 1);
+    assert!(a.knows_path(&b_dest) && b.knows_path(&a_dest));
+
+    a.send_message(&b_dest, b"ping", &mut a_rng).unwrap();
+    let (_, ping) = a.poll_outbound().unwrap();
+    let ping_events = b.handle_inbound(&ping, 1);
+    assert!(matches!(
+        &ping_events[0],
+        reticulum_node::Event::Message { plaintext, .. } if plaintext == b"ping"
+    ));
+
+    b.send_message(&a_dest, b"pong", &mut b_rng).unwrap();
+    let (_, pong) = b.poll_outbound().unwrap();
+    let pong_events = a.handle_inbound(&pong, 1);
+    assert!(matches!(
+        &pong_events[0],
+        reticulum_node::Event::Message { plaintext, .. } if plaintext == b"pong"
+    ));
+}
