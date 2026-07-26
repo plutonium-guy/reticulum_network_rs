@@ -2,8 +2,24 @@
 
 extern crate alloc;
 
+pub mod node;
 pub mod path_table;
 pub mod rng;
+
+use alloc::vec::Vec;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Event {
+    Announce {
+        dest_hash: [u8; 16],
+        hops: u8,
+    },
+    Message {
+        dest_hash: [u8; 16],
+        plaintext: Vec<u8>,
+    },
+    Error(NodeError),
+}
 
 /// Errors surfaced by node operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
