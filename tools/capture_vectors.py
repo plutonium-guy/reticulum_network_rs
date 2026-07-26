@@ -5,11 +5,9 @@ Run inside a venv with `pip install rns==1.4.1`. Writes vectors/*.json.
 
 Deterministic where RNS allows fixed key material (identity keys are derived
 from fixed seeds below, so identity.json and destination.json are
-byte-for-byte reproducible across runs). Several fields are inherently
-ephemeral and are captured as-produced rather than pinned:
-  - `token.json`'s ciphertext: `Identity.encrypt()` generates a fresh
-    ephemeral X25519 key internally on every call, with no parameter to
-    pin it.
+byte-for-byte reproducible across runs). Random sources are temporarily
+patched for the dedicated deterministic encrypt vector. Several other fields
+are captured as-produced rather than pinned:
   - `packet_data.json`'s `bytes`/`data`: RNS.Destination.encrypt() for a
     SINGLE destination calls `Identity.encrypt()` too, so every DATA
     packet is encrypted with a newly derived ephemeral AES-256 key by
@@ -68,6 +66,7 @@ with a minimal object instead of booting the full stack.
 import json
 import os
 import hashlib
+import importlib
 
 import RNS
 from RNS.Cryptography import Token  # RNS's Fernet-like primitive
@@ -149,6 +148,49 @@ w(
         "recipient_prv_x25519": hx(idty.prv_bytes),
         "plaintext": hx(plaintext),
         "token": hx(token),
+    },
+)
+
+# --- deterministic token encryption ---
+# Identity.encrypt draws through the configured X25519 provider, which may be
+# the internal implementation or the PyCA proxy. Patch the classmethod used by
+# Identity directly so the vector is provider-independent. Token.encrypt draws
+# its 16-byte IV through os.urandom().
+fixed_ephemeral = seed("token-encrypt/ephemeral-x25519")
+fixed_iv = seed("token-encrypt/iv")[:16]
+real_urandom = os.urandom
+identity_module = importlib.import_module("RNS.Identity")
+x25519_private = identity_module.X25519PrivateKey
+real_generate = x25519_private.__dict__["generate"]
+
+
+def deterministic_urandom(length):
+    if length == 32:
+        return fixed_ephemeral
+    if length == 16:
+        return fixed_iv
+    return real_urandom(length)
+
+
+try:
+    x25519_private.generate = classmethod(
+        lambda cls: cls.from_private_bytes(fixed_ephemeral)
+    )
+    os.urandom = deterministic_urandom
+    deterministic_plaintext = b"deterministic encrypt vector"
+    deterministic_token = idty.encrypt(deterministic_plaintext)
+finally:
+    x25519_private.generate = real_generate
+    os.urandom = real_urandom
+
+w(
+    "token_encrypt.json",
+    {
+        "recipient_pub": hx(pub),
+        "ephemeral_prv_x25519": hx(fixed_ephemeral),
+        "iv": hx(fixed_iv),
+        "plaintext": hx(deterministic_plaintext),
+        "token": hx(deterministic_token),
     },
 )
 

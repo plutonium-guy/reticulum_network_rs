@@ -93,6 +93,19 @@ fn token_roundtrip() {
     assert_eq!(pt, b"roundtrip");
 }
 
+#[test]
+fn token_encrypt_matches_rns_vector() {
+    use reticulum_core::identity::PublicIdentity;
+
+    let v = load("token_encrypt.json");
+    let recipient = PublicIdentity::from_bytes(&hexf(&v, "recipient_pub")).unwrap();
+    let ephemeral: [u8; 32] = hexf(&v, "ephemeral_prv_x25519").try_into().unwrap();
+    let iv: [u8; 16] = hexf(&v, "iv").try_into().unwrap();
+    let plaintext = hexf(&v, "plaintext");
+    let out = token::encrypt(&recipient, &plaintext, &ephemeral, &iv);
+    assert_eq!(out, hexf(&v, "token"));
+}
+
 use reticulum_core::packet::Packet;
 
 #[test]
