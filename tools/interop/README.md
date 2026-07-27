@@ -86,3 +86,19 @@ link data 2bd5d3f2b30d4e1c252a104b28aa1aab link hello from python
 ```
 
 Temporary identities make link IDs differ on every run.
+
+## Milestone 4 Resources
+
+Run `./tools/interop/run_resource_interop.sh` to transfer Resources in both
+directions against Python RNS 1.4.1. The gate exercises uncompressed and bzip2
+payloads, waits for the receiver proof, and compares the source and received
+files by SHA-256.
+
+Verified on 2026-07-27:
+
+```text
+PASS Rust -> Python Resources: uncompressed + bz2, SHA-256 matched
+PASS Python -> Rust Resources: uncompressed + bz2, SHA-256 matched
+```
+
+Resource hashes and Link IDs are generated afresh on every run.
