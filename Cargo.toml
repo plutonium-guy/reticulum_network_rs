@@ -6,6 +6,7 @@ members = [
     "crates/reticulum-node",
     "crates/reticulum-tokio",
     "crates/reticulum-cli",
+    "crates/reticulum-wasm",
 ]
 
 [workspace.package]
