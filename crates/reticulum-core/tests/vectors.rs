@@ -267,6 +267,36 @@ fn link_handshake_key_matches_rns_vector() {
 }
 
 #[test]
+fn link_proof_build_and_verify_match_rns_vector() {
+    use reticulum_core::{
+        identity::PublicIdentity,
+        link::{LinkEphemeral, build_link_proof, verify_link_proof},
+    };
+
+    let vector = load("link_proof.json");
+    let x: [u8; 32] = hexf(&vector, "dest_identity_prv_x").try_into().unwrap();
+    let ed: [u8; 32] = hexf(&vector, "dest_identity_prv_ed").try_into().unwrap();
+    let identity = Identity::from_private_bytes(&x, &ed);
+    let link_id: [u8; 16] = hexf(&vector, "link_id").try_into().unwrap();
+    let responder_pub: [u8; 32] = hexf(&vector, "responder_x25519_pub").try_into().unwrap();
+    let responder = LinkEphemeral::from_private_bytes([3u8; 32], [4u8; 32]);
+    let mut responder = responder;
+    responder.x25519_pub = responder_pub;
+
+    let proof = build_link_proof(&identity, &link_id, &responder);
+    assert_eq!(proof, hexf(&vector, "proof_data"));
+    let public = PublicIdentity::from_bytes(&hexf(&vector, "dest_pub")).unwrap();
+    assert_eq!(
+        verify_link_proof(&public, &link_id, &proof).unwrap(),
+        responder_pub
+    );
+
+    let mut tampered = proof;
+    tampered[0] ^= 1;
+    assert!(verify_link_proof(&public, &link_id, &tampered).is_err());
+}
+
+#[test]
 fn packet_decode_rejects_short_input() {
     assert!(Packet::decode(&[0x00]).is_err());
 }

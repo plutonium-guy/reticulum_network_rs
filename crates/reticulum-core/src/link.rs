@@ -1,4 +1,9 @@
-use crate::{CoreError, EntropySource, hash::truncated_hash, packet::Packet};
+use crate::{
+    CoreError, EntropySource,
+    hash::truncated_hash,
+    identity::{Identity, PublicIdentity},
+    packet::Packet,
+};
 use alloc::vec::Vec;
 use ed25519_dalek::SigningKey;
 use hkdf::Hkdf;
@@ -80,4 +85,50 @@ pub fn derive_link_key(
     let mut derived_key = [0u8; 64];
     let _ = hkdf.expand(&[], &mut derived_key);
     derived_key
+}
+
+pub fn build_link_proof(
+    destination_identity: &Identity,
+    link_id: &[u8; 16],
+    responder_ephemeral: &LinkEphemeral,
+) -> Vec<u8> {
+    let mut signed = Vec::with_capacity(80);
+    signed.extend_from_slice(link_id);
+    signed.extend_from_slice(&responder_ephemeral.x25519_pub);
+    signed.extend_from_slice(&destination_identity.public().sig_pub);
+    let signature = destination_identity.sign(&signed);
+
+    let mut proof = Vec::with_capacity(96);
+    proof.extend_from_slice(&signature);
+    proof.extend_from_slice(&responder_ephemeral.x25519_pub);
+    proof
+}
+
+/// Verifies both the 96-byte base proof emitted by this port and the 99-byte
+/// proof with MTU/mode signalling emitted by RNS 1.4.1.
+pub fn verify_link_proof(
+    destination_public: &PublicIdentity,
+    link_id: &[u8; 16],
+    proof_data: &[u8],
+) -> Result<[u8; 32], CoreError> {
+    if proof_data.len() < 96 {
+        return Err(CoreError::Truncated);
+    }
+    if proof_data.len() != 96 && proof_data.len() != 96 + LINK_SIGNALLING_LEN {
+        return Err(CoreError::InvalidField);
+    }
+    let signature: [u8; 64] = proof_data[..64]
+        .try_into()
+        .map_err(|_| CoreError::Truncated)?;
+    let peer_x25519_pub: [u8; 32] = proof_data[64..96]
+        .try_into()
+        .map_err(|_| CoreError::Truncated)?;
+
+    let mut signed = Vec::with_capacity(80 + LINK_SIGNALLING_LEN);
+    signed.extend_from_slice(link_id);
+    signed.extend_from_slice(&peer_x25519_pub);
+    signed.extend_from_slice(&destination_public.sig_pub);
+    signed.extend_from_slice(&proof_data[96..]);
+    destination_public.verify(&signed, &signature)?;
+    Ok(peer_x25519_pub)
 }
