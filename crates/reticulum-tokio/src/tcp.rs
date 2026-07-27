@@ -5,7 +5,7 @@ use reticulum_interface::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    net::{TcpListener, TcpStream, ToSocketAddrs},
 };
 
 const READ_CHUNK: usize = 4096;
@@ -85,6 +85,37 @@ impl TcpClientInterface {
     }
 }
 
+/// TCP listener producing independently routed HDLC interfaces.
+pub struct TcpServerInterface {
+    listener: TcpListener,
+}
+
+impl TcpServerInterface {
+    pub async fn bind(addr: impl ToSocketAddrs) -> std::io::Result<Self> {
+        Ok(Self {
+            listener: TcpListener::bind(addr).await?,
+        })
+    }
+
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.listener.local_addr()
+    }
+
+    pub async fn accept(&self, id: u16) -> std::io::Result<TcpClientInterface> {
+        let (stream, _) = self.listener.accept().await?;
+        stream.set_nodelay(true)?;
+        Ok(TcpClientInterface::from_stream(stream).with_id(id))
+    }
+
+    pub async fn serve(self, registrar: crate::driver::InterfaceRegistrar) -> std::io::Result<()> {
+        loop {
+            let id = registrar.allocate_id()?;
+            let interface = self.accept(id).await?;
+            registrar.register(Box::new(interface)).await?;
+        }
+    }
+}
+
 impl Interface for TcpClientInterface {
     const FRAMING: Framing = Framing::Hdlc;
     const HW_MTU: usize = 262_144;
@@ -145,5 +176,24 @@ mod tests {
         assert_eq!(client.recv_packet().await.unwrap().unwrap(), b"first");
         assert_eq!(client.recv_packet().await.unwrap().unwrap(), b"second");
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn server_accepts_and_echoes_spawned_interface() {
+        let server = TcpServerInterface::bind("127.0.0.1:0").await.unwrap();
+        let addr = server.local_addr().unwrap();
+        let client = tokio::spawn(async move {
+            let mut client = TcpClientInterface::connect(&addr.to_string())
+                .await
+                .unwrap();
+            client.send_packet(b"spawned").await.unwrap();
+            client.recv_packet().await.unwrap().unwrap()
+        });
+
+        let mut accepted = server.accept(42).await.unwrap();
+        assert_eq!(accepted.id, 42);
+        let packet = accepted.recv_packet().await.unwrap().unwrap();
+        accepted.send_packet(&packet).await.unwrap();
+        assert_eq!(client.await.unwrap(), b"spawned");
     }
 }

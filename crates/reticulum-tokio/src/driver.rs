@@ -1,4 +1,12 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    future::pending,
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 use reticulum_node::{Event, NodeError, clock::Clock, node::Node};
 use tokio::{
@@ -11,6 +19,7 @@ use crate::{OsEntropy, interface::AsyncInterface, tcp::TcpClientInterface};
 const INTERFACE_ID: u16 = 0;
 const COMMAND_CAPACITY: usize = 32;
 const INTERFACE_CAPACITY: usize = 32;
+const REGISTRATION_CAPACITY: usize = 16;
 
 enum Command {
     AnnounceAll(Vec<u8>),
@@ -202,10 +211,37 @@ enum Inbound {
 pub struct Driver<C: Clock> {
     node: Node<C>,
     interfaces: BTreeMap<u16, mpsc::Sender<Vec<u8>>>,
+    inbound_sender: mpsc::Sender<Inbound>,
     inbound: mpsc::Receiver<Inbound>,
+    registrations: Option<mpsc::Receiver<Box<dyn AsyncInterface>>>,
+    keep_alive: bool,
     entropy: OsEntropy,
     commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<Event>,
+}
+
+/// Registration handle for interfaces created after the driver starts, such
+/// as accepted TCP connections and discovered peers.
+#[derive(Clone)]
+pub struct InterfaceRegistrar {
+    registrations: mpsc::Sender<Box<dyn AsyncInterface>>,
+    next_id: Arc<AtomicU32>,
+}
+
+impl InterfaceRegistrar {
+    pub fn allocate_id(&self) -> io::Result<u16> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        u16::try_from(id).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "interface id space exhausted")
+        })
+    }
+
+    pub async fn register(&self, interface: Box<dyn AsyncInterface>) -> io::Result<()> {
+        self.registrations
+            .send(interface)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "driver stopped"))
+    }
 }
 
 impl<C: Clock + Send + 'static> Driver<C> {
@@ -230,30 +266,51 @@ impl<C: Clock + Send + 'static> Driver<C> {
     }
 
     pub fn new_interfaces(
-        mut node: Node<C>,
+        node: Node<C>,
         interfaces: Vec<Box<dyn AsyncInterface>>,
         events: mpsc::Sender<Event>,
     ) -> (Self, DriverHandle) {
+        let (driver, handle, _) = Self::build(node, interfaces, events, false);
+        (driver, handle)
+    }
+
+    pub fn new_dynamic(
+        node: Node<C>,
+        interfaces: Vec<Box<dyn AsyncInterface>>,
+        events: mpsc::Sender<Event>,
+    ) -> (Self, DriverHandle, InterfaceRegistrar) {
+        Self::build(node, interfaces, events, true)
+    }
+
+    fn build(
+        mut node: Node<C>,
+        interfaces: Vec<Box<dyn AsyncInterface>>,
+        events: mpsc::Sender<Event>,
+        keep_alive: bool,
+    ) -> (Self, DriverHandle, InterfaceRegistrar) {
         let (commands_tx, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (inbound_tx, inbound_rx) = mpsc::channel(INTERFACE_CAPACITY);
+        let (registrations_tx, registrations_rx) = mpsc::channel(REGISTRATION_CAPACITY);
         let mut interface_senders = BTreeMap::new();
+        let mut highest_id = None;
         for interface in interfaces {
             let id = interface.id();
+            highest_id = Some(highest_id.map_or(id, |highest: u16| highest.max(id)));
             node.register_interface(id);
-            let (outbound_tx, outbound_rx) = mpsc::channel(INTERFACE_CAPACITY);
-            interface_senders.insert(id, outbound_tx);
-            tokio::spawn(run_interface(
-                id,
-                interface,
-                outbound_rx,
-                inbound_tx.clone(),
-            ));
+            interface_senders.insert(id, spawn_interface(interface, inbound_tx.clone()));
         }
+        let registrar = InterfaceRegistrar {
+            registrations: registrations_tx,
+            next_id: Arc::new(AtomicU32::new(highest_id.map_or(0, |id| u32::from(id) + 1))),
+        };
         (
             Self {
                 node,
                 interfaces: interface_senders,
+                inbound_sender: inbound_tx,
                 inbound: inbound_rx,
+                registrations: Some(registrations_rx),
+                keep_alive,
                 entropy: OsEntropy,
                 commands: commands_rx,
                 events,
@@ -261,6 +318,7 @@ impl<C: Clock + Send + 'static> Driver<C> {
             DriverHandle {
                 commands: commands_tx,
             },
+            registrar,
         )
     }
 
@@ -369,18 +427,41 @@ impl<C: Clock + Send + 'static> Driver<C> {
                         }
                         Some(Inbound::Closed { interface }) => {
                             self.interfaces.remove(&interface);
-                            if self.interfaces.is_empty() {
+                            if self.interfaces.is_empty() && !self.keep_alive {
                                 return Ok(());
                             }
                         }
                         Some(Inbound::Error { interface, error }) => {
                             self.interfaces.remove(&interface);
-                            if self.interfaces.is_empty() {
+                            if self.interfaces.is_empty() && !self.keep_alive {
                                 return Err(error);
                             }
                             self.emit(Event::Error(NodeError::Unknown)).await;
                         }
                         None => return Ok(()),
+                    }
+                }
+                registration = receive_registration(&mut self.registrations) => {
+                    match registration {
+                        Some(interface) => {
+                            let id = interface.id();
+                            if self.interfaces.contains_key(&id) {
+                                self.emit(Event::Error(NodeError::Unknown)).await;
+                                continue;
+                            }
+                            self.node.register_interface(id);
+                            let sender = spawn_interface(
+                                interface,
+                                self.inbound_sender.clone(),
+                            );
+                            self.interfaces.insert(id, sender);
+                        }
+                        None => {
+                            self.registrations = None;
+                            if self.interfaces.is_empty() {
+                                return Ok(());
+                            }
+                        }
                     }
                 }
                 _ = tick.tick() => {
@@ -409,6 +490,25 @@ impl<C: Clock + Send + 'static> Driver<C> {
 
     async fn emit(&self, event: Event) {
         let _ = self.events.send(event).await;
+    }
+}
+
+fn spawn_interface(
+    interface: Box<dyn AsyncInterface>,
+    inbound: mpsc::Sender<Inbound>,
+) -> mpsc::Sender<Vec<u8>> {
+    let id = interface.id();
+    let (outbound_tx, outbound_rx) = mpsc::channel(INTERFACE_CAPACITY);
+    tokio::spawn(run_interface(id, interface, outbound_rx, inbound));
+    outbound_tx
+}
+
+async fn receive_registration(
+    registrations: &mut Option<mpsc::Receiver<Box<dyn AsyncInterface>>>,
+) -> Option<Box<dyn AsyncInterface>> {
+    match registrations {
+        Some(registrations) => registrations.recv().await,
+        None => pending().await,
     }
 }
 
