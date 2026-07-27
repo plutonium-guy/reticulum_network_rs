@@ -313,6 +313,10 @@ impl InboundResource {
         self.parts.len()
     }
 
+    pub fn ready_for_request(&self) -> bool {
+        !self.is_complete() && self.outstanding.is_empty() && !self.waiting_for_hmu
+    }
+
     pub fn finalize(&self, link_key: &[u8; 64]) -> Result<Vec<u8>, CoreError> {
         if !self.is_complete() {
             return Err(CoreError::Truncated);

@@ -12,8 +12,10 @@ use reticulum_core::{
     },
     packet::{
         ANNOUNCE, BROADCAST, DATA, HEADER_1, HEADER_2, KEEPALIVE, LINK, LINKCLOSE, LINKREQUEST,
-        LRPROOF, LRRTT, PATH_RESPONSE, PLAIN, PROOF, Packet, TRANSPORT,
+        LRPROOF, LRRTT, PATH_RESPONSE, PLAIN, PROOF, Packet, RESOURCE, RESOURCE_ADV, RESOURCE_HMU,
+        RESOURCE_ICL, RESOURCE_PRF, RESOURCE_RCL, RESOURCE_REQ, TRANSPORT,
     },
+    resource::ResourceAdvertisement,
     token,
 };
 
@@ -28,6 +30,7 @@ use crate::{
     clock::{Clock, NoClock},
     link_state::{LinkEntry, LinkRegistry, LinkStatus},
     path_table::{PathEntry, PathTable},
+    resource_state::{InboundResource, OutboundResource, ResourceOutput},
     rng::EntropySource,
 };
 
@@ -51,6 +54,8 @@ pub struct Node<C: Clock = NoClock> {
     outbound: VecDeque<(u16, Vec<u8>)>,
     links: LinkRegistry,
     pending_events: VecDeque<Event>,
+    outbound_resources: BTreeMap<([u8; 16], [u8; 32]), OutboundResource>,
+    inbound_resources: BTreeMap<([u8; 16], [u8; 32]), InboundResource>,
 }
 
 impl Node<NoClock> {
@@ -75,6 +80,8 @@ impl<C: Clock> Node<C> {
             outbound: VecDeque::new(),
             links: LinkRegistry::default(),
             pending_events: VecDeque::new(),
+            outbound_resources: BTreeMap::new(),
+            inbound_resources: BTreeMap::new(),
         }
     }
 
@@ -257,6 +264,33 @@ impl<C: Clock> Node<C> {
         Ok(())
     }
 
+    pub fn send_resource<R: EntropySource>(
+        &mut self,
+        link_id: &[u8; 16],
+        data: &[u8],
+        rng: &mut R,
+    ) -> Result<[u8; 32], NodeError> {
+        let (key, interface) = self
+            .links
+            .get(link_id)
+            .filter(|link| link.status == LinkStatus::Active)
+            .and_then(|link| link.derived_key.map(|key| (key, link.interface)))
+            .ok_or(NodeError::Unknown)?;
+        let (resource, advertisement) =
+            OutboundResource::new(data, &key, rng, self.clock.now_secs())?;
+        let hash = resource.hash;
+        self.outbound_resources.insert((*link_id, hash), resource);
+        self.enqueue_encrypted_link_context(
+            link_id,
+            interface,
+            RESOURCE_ADV,
+            &advertisement,
+            &key,
+            rng,
+        );
+        Ok(hash)
+    }
+
     pub fn close_link(&mut self, link_id: &[u8; 16]) {
         if let Some(link) = self.links.get_mut(link_id)
             && link.status != LinkStatus::Closed
@@ -268,6 +302,14 @@ impl<C: Clock> Node<C> {
     }
 
     pub fn tick(&mut self) -> Vec<Event> {
+        self.tick_inner(None)
+    }
+
+    pub fn tick_with_entropy<R: EntropySource>(&mut self, rng: &mut R) -> Vec<Event> {
+        self.tick_inner(Some(rng))
+    }
+
+    fn tick_inner(&mut self, mut rng: Option<&mut dyn EntropySource>) -> Vec<Event> {
         let now = self.clock.now_secs();
         let mut keepalives = Vec::new();
         let mut closed = Vec::new();
@@ -293,6 +335,35 @@ impl<C: Clock> Node<C> {
         }
         for link_id in closed {
             self.pending_events.push_back(Event::LinkClosed { link_id });
+        }
+        let resource_keys: Vec<_> = self.inbound_resources.keys().copied().collect();
+        for (link_id, hash) in resource_keys {
+            let retry = self
+                .inbound_resources
+                .get_mut(&(link_id, hash))
+                .map(|resource| resource.retry_due(now));
+            match retry {
+                Some(Ok(Some(request))) => {
+                    if let (Some(rng), Some(link)) = (rng.as_deref_mut(), self.links.get(&link_id))
+                        && let Some(key) = link.derived_key
+                    {
+                        self.enqueue_encrypted_link_context(
+                            &link_id,
+                            link.interface,
+                            RESOURCE_REQ,
+                            &request,
+                            &key,
+                            rng,
+                        );
+                    }
+                }
+                Some(Err(_)) => {
+                    self.inbound_resources.remove(&(link_id, hash));
+                    self.pending_events
+                        .push_back(Event::ResourceFailed { link_id, hash });
+                }
+                _ => {}
+            }
         }
         self.pending_events.drain(..).collect()
     }
@@ -352,8 +423,12 @@ impl<C: Clock> Node<C> {
         if packet.packet_type == PROOF && packet.dest_type == LINK && packet.context == LRPROOF {
             return self.handle_link_proof(&packet, &dest_hash, rng);
         }
+        if packet.packet_type == PROOF && packet.dest_type == LINK && packet.context == RESOURCE_PRF
+        {
+            return self.handle_resource_proof(&packet, &dest_hash);
+        }
         if packet.packet_type == DATA && packet.dest_type == LINK {
-            return self.handle_link_data(&packet, &dest_hash, interface);
+            return self.handle_link_data(&packet, &dest_hash, interface, rng);
         }
         match packet.packet_type {
             ANNOUNCE => self.handle_announce(&packet, &dest_hash, interface),
@@ -464,6 +539,7 @@ impl<C: Clock> Node<C> {
         packet: &Packet,
         link_id: &[u8; 16],
         interface: u16,
+        rng: Option<&mut dyn EntropySource>,
     ) -> Vec<Event> {
         let Some(link) = self
             .links
@@ -475,6 +551,9 @@ impl<C: Clock> Node<C> {
         let Some(key) = link.derived_key else {
             return Vec::new();
         };
+        if packet.context == RESOURCE {
+            return self.handle_resource_part(link_id, interface, &key, &packet.data, rng);
+        }
         if packet.context == KEEPALIVE {
             if packet.data == [0xFF] {
                 self.outbound.push_back((
@@ -508,8 +587,276 @@ impl<C: Clock> Node<C> {
                 link_id: *link_id,
                 plaintext,
             }],
+            RESOURCE_ADV | RESOURCE_REQ | RESOURCE_HMU | RESOURCE_ICL | RESOURCE_RCL => match rng {
+                Some(rng) => self.handle_resource_context(
+                    link_id,
+                    interface,
+                    &key,
+                    packet.context,
+                    &plaintext,
+                    rng,
+                ),
+                None => Vec::new(),
+            },
             _ => Vec::new(),
         }
+    }
+
+    fn handle_resource_context(
+        &mut self,
+        link_id: &[u8; 16],
+        interface: u16,
+        key: &[u8; 64],
+        context: u8,
+        plaintext: &[u8],
+        rng: &mut dyn EntropySource,
+    ) -> Vec<Event> {
+        match context {
+            RESOURCE_ADV => {
+                let advertisement = match ResourceAdvertisement::unpack(plaintext) {
+                    Ok(advertisement) => advertisement,
+                    Err(error) => return alloc::vec![Event::Error(NodeError::Core(error))],
+                };
+                let resource = match InboundResource::from_advertisement(advertisement) {
+                    Ok(resource) => resource,
+                    Err(error) => return alloc::vec![Event::Error(NodeError::Core(error))],
+                };
+                let hash = resource.hash;
+                let size = resource.total_size;
+                self.inbound_resources.insert((*link_id, hash), resource);
+                if let Some(request) = self
+                    .inbound_resources
+                    .get_mut(&(*link_id, hash))
+                    .and_then(|resource| resource.next_request(self.clock.now_secs()))
+                {
+                    self.enqueue_encrypted_link_context(
+                        link_id,
+                        interface,
+                        RESOURCE_REQ,
+                        &request,
+                        key,
+                        rng,
+                    );
+                }
+                alloc::vec![Event::ResourceStarted {
+                    link_id: *link_id,
+                    hash,
+                    size,
+                }]
+            }
+            RESOURCE_REQ => {
+                let hash = if plaintext.first() == Some(&0xFF) {
+                    plaintext.get(5..37)
+                } else {
+                    plaintext.get(1..33)
+                }
+                .and_then(|hash| <[u8; 32]>::try_from(hash).ok());
+                let Some(hash) = hash else {
+                    return Vec::new();
+                };
+                let outputs = self
+                    .outbound_resources
+                    .get_mut(&(*link_id, hash))
+                    .map(|resource| resource.on_request(plaintext, self.clock.now_secs()))
+                    .unwrap_or_default();
+                for output in outputs {
+                    match output {
+                        ResourceOutput::Part(part) => self.outbound.push_back((
+                            interface,
+                            Packet::link_context(link_id, RESOURCE, part).encode(),
+                        )),
+                        ResourceOutput::HashmapUpdate(update) => {
+                            self.enqueue_encrypted_link_context(
+                                link_id,
+                                interface,
+                                RESOURCE_HMU,
+                                &update,
+                                key,
+                                rng,
+                            );
+                        }
+                    }
+                }
+                Vec::new()
+            }
+            RESOURCE_HMU => {
+                let Some(hash) = plaintext
+                    .get(..32)
+                    .and_then(|hash| <[u8; 32]>::try_from(hash).ok())
+                else {
+                    return Vec::new();
+                };
+                let result = self
+                    .inbound_resources
+                    .get_mut(&(*link_id, hash))
+                    .map(|resource| resource.on_hashmap_update(plaintext));
+                if !matches!(result, Some(Ok(()))) {
+                    return Vec::new();
+                }
+                if let Some(request) = self
+                    .inbound_resources
+                    .get_mut(&(*link_id, hash))
+                    .and_then(|resource| resource.next_request(self.clock.now_secs()))
+                {
+                    self.enqueue_encrypted_link_context(
+                        link_id,
+                        interface,
+                        RESOURCE_REQ,
+                        &request,
+                        key,
+                        rng,
+                    );
+                }
+                Vec::new()
+            }
+            RESOURCE_ICL | RESOURCE_RCL => {
+                let Some(hash) = plaintext
+                    .get(..32)
+                    .and_then(|hash| <[u8; 32]>::try_from(hash).ok())
+                else {
+                    return Vec::new();
+                };
+                self.inbound_resources.remove(&(*link_id, hash));
+                self.outbound_resources.remove(&(*link_id, hash));
+                alloc::vec![Event::ResourceFailed {
+                    link_id: *link_id,
+                    hash,
+                }]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn handle_resource_part(
+        &mut self,
+        link_id: &[u8; 16],
+        interface: u16,
+        key: &[u8; 64],
+        part: &[u8],
+        rng: Option<&mut dyn EntropySource>,
+    ) -> Vec<Event> {
+        let candidates: Vec<_> = self
+            .inbound_resources
+            .keys()
+            .filter(|(candidate_link, _)| candidate_link == link_id)
+            .copied()
+            .collect();
+        for resource_key @ (_, hash) in candidates {
+            let accepted = self
+                .inbound_resources
+                .get_mut(&resource_key)
+                .is_some_and(|resource| resource.on_part(part.to_vec()));
+            if !accepted {
+                continue;
+            }
+            let (received, total, complete) = self
+                .inbound_resources
+                .get(&resource_key)
+                .map(|resource| {
+                    (
+                        resource.received_parts(),
+                        resource.total_parts(),
+                        resource.is_complete(),
+                    )
+                })
+                .unwrap_or_default();
+            let mut events = alloc::vec![Event::ResourceProgress {
+                link_id: *link_id,
+                hash,
+                fraction: received as f32 / total as f32,
+            }];
+            if complete {
+                let finalized = self
+                    .inbound_resources
+                    .get(&resource_key)
+                    .and_then(|resource| {
+                        resource
+                            .finalize(key)
+                            .ok()
+                            .map(|data| (resource.proof_packet(&data), data))
+                    });
+                self.inbound_resources.remove(&resource_key);
+                match finalized {
+                    Some((proof, data)) => {
+                        self.outbound.push_back((
+                            interface,
+                            Packet::proof(link_id, proof, RESOURCE_PRF).encode(),
+                        ));
+                        events.push(Event::ResourceComplete {
+                            link_id: *link_id,
+                            hash,
+                            data,
+                        });
+                    }
+                    None => events.push(Event::ResourceFailed {
+                        link_id: *link_id,
+                        hash,
+                    }),
+                }
+            } else if let Some(rng) = rng
+                && self
+                    .inbound_resources
+                    .get(&resource_key)
+                    .is_some_and(InboundResource::ready_for_request)
+            {
+                let request = self
+                    .inbound_resources
+                    .get_mut(&resource_key)
+                    .and_then(|resource| {
+                        resource
+                            .next_request(self.clock.now_secs())
+                            .filter(|_| resource.retries == 0)
+                    });
+                if let Some(request) = request {
+                    self.enqueue_encrypted_link_context(
+                        link_id,
+                        interface,
+                        RESOURCE_REQ,
+                        &request,
+                        key,
+                        rng,
+                    );
+                }
+            }
+            return events;
+        }
+        Vec::new()
+    }
+
+    fn handle_resource_proof(&mut self, packet: &Packet, link_id: &[u8; 16]) -> Vec<Event> {
+        let Some(hash) = packet
+            .data
+            .get(..32)
+            .and_then(|hash| <[u8; 32]>::try_from(hash).ok())
+        else {
+            return Vec::new();
+        };
+        let completed = self
+            .outbound_resources
+            .get_mut(&(*link_id, hash))
+            .is_some_and(|resource| resource.on_proof(&packet.data));
+        if completed {
+            self.outbound_resources.remove(&(*link_id, hash));
+        }
+        Vec::new()
+    }
+
+    fn enqueue_encrypted_link_context(
+        &mut self,
+        link_id: &[u8; 16],
+        interface: u16,
+        context: u8,
+        plaintext: &[u8],
+        key: &[u8; 64],
+        rng: &mut dyn EntropySource,
+    ) {
+        let mut iv = [0u8; 16];
+        rng.fill(&mut iv);
+        let encrypted = token::seal_with_key(key, plaintext, &iv);
+        self.outbound.push_back((
+            interface,
+            Packet::link_context(link_id, context, encrypted).encode(),
+        ));
     }
 
     fn handle_announce(

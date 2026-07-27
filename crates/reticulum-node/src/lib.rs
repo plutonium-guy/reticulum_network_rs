@@ -13,7 +13,7 @@ pub use clock::{Clock, NoClock, TestClock};
 
 use alloc::vec::Vec;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Announce {
         dest_hash: [u8; 16],
@@ -32,6 +32,25 @@ pub enum Event {
     },
     LinkClosed {
         link_id: [u8; 16],
+    },
+    ResourceStarted {
+        link_id: [u8; 16],
+        hash: [u8; 32],
+        size: u64,
+    },
+    ResourceProgress {
+        link_id: [u8; 16],
+        hash: [u8; 32],
+        fraction: f32,
+    },
+    ResourceComplete {
+        link_id: [u8; 16],
+        hash: [u8; 32],
+        data: Vec<u8>,
+    },
+    ResourceFailed {
+        link_id: [u8; 16],
+        hash: [u8; 32],
     },
     Error(NodeError),
 }

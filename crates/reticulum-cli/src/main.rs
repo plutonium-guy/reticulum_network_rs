@@ -267,6 +267,26 @@ fn print_event(event: &Event) {
         Event::LinkClosed { link_id } => {
             println!("link closed {}", hex::encode(link_id));
         }
+        Event::ResourceStarted { hash, size, .. } => {
+            println!("resource started {} size={size}", hex::encode(hash));
+        }
+        Event::ResourceProgress { hash, fraction, .. } => {
+            println!(
+                "resource progress {} {:.1}%",
+                hex::encode(hash),
+                fraction * 100.0
+            );
+        }
+        Event::ResourceComplete { hash, data, .. } => {
+            println!(
+                "resource complete {} bytes={}",
+                hex::encode(hash),
+                data.len()
+            );
+        }
+        Event::ResourceFailed { hash, .. } => {
+            eprintln!("resource failed {}", hex::encode(hash));
+        }
         Event::Error(error) => eprintln!("node error: {error:?}"),
     }
 }

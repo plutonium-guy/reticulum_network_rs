@@ -420,3 +420,68 @@ fn two_nodes_establish_link_and_exchange_data_both_directions() {
         [reticulum_node::Event::LinkClosed { link_id: closed }] if closed == &link_id
     ));
 }
+
+#[test]
+fn two_nodes_transfer_multikilobyte_resource_over_link() {
+    let mut initiator = Node::new(Identity::from_private_bytes(&[51u8; 32], &[52u8; 32]));
+    let mut responder = Node::new(Identity::from_private_bytes(&[53u8; 32], &[54u8; 32]));
+    let responder_dest = responder.register_single_destination("chat", &["resource"]);
+    let mut initiator_rng = SeededRng::new(303);
+    let mut responder_rng = SeededRng::new(404);
+
+    responder.send_announce(&responder_dest, b"", &mut responder_rng, 9);
+    let (_, announce) = responder.poll_outbound().unwrap();
+    initiator.handle_inbound(&announce, 9);
+    let link_id = initiator
+        .establish_link(&responder_dest, &mut initiator_rng)
+        .unwrap();
+    let (_, request) = initiator.poll_outbound().unwrap();
+    responder.handle_inbound_with_entropy(&request, 9, &mut responder_rng);
+    let (_, proof) = responder.poll_outbound().unwrap();
+    initiator.handle_inbound_with_entropy(&proof, 9, &mut initiator_rng);
+    let (_, rtt) = initiator.poll_outbound().unwrap();
+    responder.handle_inbound_with_entropy(&rtt, 9, &mut responder_rng);
+
+    let data: Vec<u8> = (0..8192).map(|index| (index % 251) as u8).collect();
+    let resource_hash = initiator
+        .send_resource(&link_id, &data, &mut initiator_rng)
+        .unwrap();
+    let mut started = false;
+    let mut progress = false;
+    let mut complete = None;
+
+    for _ in 0..200 {
+        let mut moved = false;
+        while let Some((_, packet)) = initiator.poll_outbound() {
+            moved = true;
+            for event in responder.handle_inbound_with_entropy(&packet, 9, &mut responder_rng) {
+                match event {
+                    reticulum_node::Event::ResourceStarted { hash, .. } => {
+                        started |= hash == resource_hash;
+                    }
+                    reticulum_node::Event::ResourceProgress { hash, .. } => {
+                        progress |= hash == resource_hash;
+                    }
+                    reticulum_node::Event::ResourceComplete {
+                        hash,
+                        data: received,
+                        ..
+                    } if hash == resource_hash => complete = Some(received),
+                    _ => {}
+                }
+            }
+        }
+        while let Some((_, packet)) = responder.poll_outbound() {
+            moved = true;
+            initiator.handle_inbound_with_entropy(&packet, 9, &mut initiator_rng);
+        }
+        if complete.is_some() {
+            break;
+        }
+        assert!(moved, "resource transfer stalled");
+    }
+
+    assert!(started);
+    assert!(progress);
+    assert_eq!(complete.as_deref(), Some(data.as_slice()));
+}
