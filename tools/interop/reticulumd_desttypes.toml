@@ -1,0 +1,6 @@
+tcp_addr = "127.0.0.1:42429"
+identity_path = "reticulum-rust-desttypes.identity"
+app_name = "reticulum_rust"
+aspects = ["message"]
+app_data = "rust destination types interop node"
+announce_interval_secs = 1

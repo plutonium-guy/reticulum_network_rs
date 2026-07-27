@@ -102,3 +102,23 @@ PASS Python -> Rust Resources: uncompressed + bz2, SHA-256 matched
 ```
 
 Resource hashes and Link IDs are generated afresh on every run.
+
+## Milestone 5 Destination Types and Proofs
+
+Run `./tools/interop/run_desttypes_interop.sh` to exercise PLAIN, GROUP and
+explicit packet proofs against Python RNS 1.4.1. The Python peer owns the TCP
+interface directly because GROUP destinations are intentionally single-hop;
+an RNS shared-instance transport does not relay GROUP broadcasts between
+client interfaces.
+
+Verified on 2026-07-27:
+
+```text
+PASS Rust -> Python: PLAIN + GROUP + explicit delivery proof
+PASS Python -> Rust: PLAIN + GROUP + explicit delivery proof
+```
+
+The gate independently checks the GROUP and PLAIN destination derivations,
+requires exact received plaintext in both directions, configures explicit
+proofs, and waits for both Python `PacketReceipt` delivery and Rust
+`Delivered` confirmation.
