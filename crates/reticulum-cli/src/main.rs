@@ -22,6 +22,13 @@ enum Mode {
         dest_hash: [u8; 16],
         plaintext: Option<Vec<u8>>,
     },
+    SendFile {
+        dest_hash: [u8; 16],
+        path: PathBuf,
+    },
+    ReceiveFile {
+        out_dir: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -180,6 +187,79 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
+        Mode::SendFile { dest_hash, path } => {
+            let data = std::fs::read(&path)?;
+            let mut link_id = None;
+            let mut resource_hash = None;
+            while let Some(event) = events_rx.recv().await {
+                print_event(&event);
+                match event {
+                    Event::Announce {
+                        dest_hash: announced,
+                        ..
+                    } if announced == dest_hash && link_id.is_none() => {
+                        let established =
+                            handle.establish_link(dest_hash).await.map_err(|error| {
+                                io::Error::other(format!("could not establish link: {error:?}"))
+                            })?;
+                        println!("link requested {}", hex::encode(established));
+                        link_id = Some(established);
+                    }
+                    Event::LinkEstablished {
+                        link_id: established,
+                    } if Some(established) == link_id && resource_hash.is_none() => {
+                        let hash =
+                            handle
+                                .send_resource(established, &data)
+                                .await
+                                .map_err(|error| {
+                                    io::Error::other(format!("could not send resource: {error:?}"))
+                                })?;
+                        println!("resource sent {}", hex::encode(hash));
+                        resource_hash = Some(hash);
+                    }
+                    Event::ResourceComplete { hash, .. } if Some(hash) == resource_hash => {
+                        println!("file transfer complete {}", path.display());
+                        shutdown(&handle).await?;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Mode::ReceiveFile { out_dir } => {
+            std::fs::create_dir_all(&out_dir)?;
+            let mut announce_interval =
+                tokio::time::interval(Duration::from_secs(config.announce_interval_secs.max(1)));
+            announce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            announce_interval.tick().await;
+            loop {
+                tokio::select! {
+                    event = events_rx.recv() => {
+                        let Some(event) = event else {
+                            break;
+                        };
+                        print_event(&event);
+                        if let Event::ResourceComplete { hash, data, .. } = event
+                            && !data.is_empty()
+                        {
+                            let path = out_dir.join(format!("{}.resource", hex::encode(hash)));
+                            std::fs::write(&path, data)?;
+                            println!("resource written {}", path.display());
+                        }
+                    }
+                    _ = announce_interval.tick() => {
+                        handle
+                            .announce_all(config.app_data.as_bytes())
+                            .await
+                            .map_err(|_| io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "driver stopped before periodic announce",
+                            ))?;
+                    }
+                }
+            }
+        }
     }
 
     driver_task.await??;
@@ -219,8 +299,15 @@ fn parse_mode(args: &[String]) -> Result<Mode, Box<dyn Error>> {
             dest_hash: parse_hash(&args[1], "destination")?,
             plaintext: Some(args[2].as_bytes().to_vec()),
         }),
+        Some("send-file") if args.len() == 3 => Ok(Mode::SendFile {
+            dest_hash: parse_hash(&args[1], "destination")?,
+            path: PathBuf::from(&args[2]),
+        }),
+        Some("receive-file") if args.len() == 2 => Ok(Mode::ReceiveFile {
+            out_dir: PathBuf::from(&args[1]),
+        }),
         _ => Err(
-            "usage: reticulumd <run|announce|send DEST_HASH TEXT|link DEST_HASH|link-send DEST_HASH TEXT> [--config PATH]"
+            "usage: reticulumd <run|announce|send DEST_HASH TEXT|link DEST_HASH|link-send DEST_HASH TEXT|send-file DEST_HASH PATH|receive-file OUT_DIR> [--config PATH]"
                 .into(),
         ),
     }

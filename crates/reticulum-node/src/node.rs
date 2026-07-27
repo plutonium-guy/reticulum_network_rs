@@ -837,6 +837,11 @@ impl<C: Clock> Node<C> {
             .is_some_and(|resource| resource.on_proof(&packet.data));
         if completed {
             self.outbound_resources.remove(&(*link_id, hash));
+            return alloc::vec![Event::ResourceComplete {
+                link_id: *link_id,
+                hash,
+                data: Vec::new(),
+            }];
         }
         Vec::new()
     }

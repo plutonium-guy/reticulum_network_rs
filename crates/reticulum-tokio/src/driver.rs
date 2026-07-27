@@ -26,6 +26,11 @@ enum Command {
         link_id: [u8; 16],
         plaintext: Vec<u8>,
     },
+    SendResource {
+        link_id: [u8; 16],
+        data: Vec<u8>,
+        reply: oneshot::Sender<Result<[u8; 32], NodeError>>,
+    },
     CloseLink([u8; 16]),
     Shutdown,
 }
@@ -89,6 +94,26 @@ impl DriverHandle {
             .send(Command::CloseLink(link_id))
             .await
             .map_err(|_| DriverClosed)
+    }
+
+    pub async fn send_resource(
+        &self,
+        link_id: [u8; 16],
+        data: &[u8],
+    ) -> Result<[u8; 32], DriverError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::SendResource {
+                link_id,
+                data: data.to_vec(),
+                reply,
+            })
+            .await
+            .map_err(|_| DriverError::Closed)?;
+        response
+            .await
+            .map_err(|_| DriverError::Closed)?
+            .map_err(DriverError::Node)
     }
 
     pub async fn shutdown(&self) -> Result<(), DriverClosed> {
@@ -209,6 +234,12 @@ impl<C: Clock + Send + 'static> Driver<C> {
                             }
                             self.drain_outbound().await?;
                         }
+                        Some(Command::SendResource { link_id, data, reply }) => {
+                            let result =
+                                self.node.send_resource(&link_id, &data, &mut self.entropy);
+                            let _ = reply.send(result);
+                            self.drain_outbound().await?;
+                        }
                         Some(Command::CloseLink(link_id)) => {
                             self.node.close_link(&link_id);
                             for event in self.node.tick() {
@@ -248,7 +279,7 @@ impl<C: Clock + Send + 'static> Driver<C> {
                     }
                 }
                 _ = tick.tick() => {
-                    for event in self.node.tick() {
+                    for event in self.node.tick_with_entropy(&mut self.entropy) {
                         self.emit(event).await;
                     }
                     self.drain_outbound().await?;
@@ -433,6 +464,23 @@ mod tests {
             Event::LinkData { link_id: id, plaintext }
                 if id == link_id && plaintext == b"link reply"
         ));
+
+        let resource = (0..8192)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let resource_hash = a_handle.send_resource(link_id, &resource).await.unwrap();
+        let completed = timeout(Duration::from_secs(2), async {
+            loop {
+                if let Some(Event::ResourceComplete { hash, data, .. }) = b_events_rx.recv().await
+                    && hash == resource_hash
+                {
+                    break data;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(completed, resource);
 
         a_handle.close_link(link_id).await.unwrap();
         a_handle.shutdown().await.unwrap();
