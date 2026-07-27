@@ -6,8 +6,13 @@ use reticulum_core::{
     announce::Announce,
     destination::{destination_hash, name_hash},
     identity::{Identity, PublicIdentity},
+    link::{
+        LinkEphemeral, build_link_proof, derive_link_key, link_id_from_request,
+        link_request_payload, parse_link_request, verify_link_proof,
+    },
     packet::{
-        ANNOUNCE, BROADCAST, DATA, HEADER_1, HEADER_2, PATH_RESPONSE, PLAIN, Packet, TRANSPORT,
+        ANNOUNCE, BROADCAST, DATA, HEADER_1, HEADER_2, KEEPALIVE, LINK, LINKCLOSE, LINKREQUEST,
+        LRPROOF, LRRTT, PATH_RESPONSE, PLAIN, PROOF, Packet, TRANSPORT,
     },
     token,
 };
@@ -15,10 +20,13 @@ use reticulum_core::{
 const PATH_EXPIRY_SECS: u64 = 604_800;
 const PATHFINDER_MAX_HOPS: u8 = 128;
 const PACKET_HASH_TTL_SECS: u64 = 60;
+const LINK_KEEPALIVE_SECS: u64 = 360;
+const LINK_STALE_SECS: u64 = 720;
 
 use crate::{
     Event, NodeError,
     clock::{Clock, NoClock},
+    link_state::{LinkEntry, LinkRegistry, LinkStatus},
     path_table::{PathEntry, PathTable},
     rng::EntropySource,
 };
@@ -41,6 +49,8 @@ pub struct Node<C: Clock = NoClock> {
     seen_packets: BTreeMap<[u8; 16], u64>,
     cached_announces: BTreeMap<[u8; 16], Packet>,
     outbound: VecDeque<(u16, Vec<u8>)>,
+    links: LinkRegistry,
+    pending_events: VecDeque<Event>,
 }
 
 impl Node<NoClock> {
@@ -63,6 +73,8 @@ impl<C: Clock> Node<C> {
             seen_packets: BTreeMap::new(),
             cached_announces: BTreeMap::new(),
             outbound: VecDeque::new(),
+            links: LinkRegistry::default(),
+            pending_events: VecDeque::new(),
         }
     }
 
@@ -174,7 +186,136 @@ impl<C: Clock> Node<C> {
         Ok(())
     }
 
+    pub fn establish_link<R: EntropySource>(
+        &mut self,
+        dest_hash: &[u8; 16],
+        rng: &mut R,
+    ) -> Result<[u8; 16], NodeError> {
+        self.paths.prune(self.clock.now_secs());
+        let (interface, next_hop_transport_id, hops, destination_public) = self
+            .paths
+            .get(dest_hash)
+            .map(|entry| {
+                (
+                    entry.interface,
+                    entry.next_hop_transport_id,
+                    entry.hops,
+                    entry.public.clone(),
+                )
+            })
+            .ok_or(NodeError::Unknown)?;
+        let ephemeral = LinkEphemeral::generate(rng);
+        let mut packet = Packet::link_request(dest_hash, link_request_payload(&ephemeral));
+        let link_id = link_id_from_request(&packet);
+        if hops > 1 {
+            packet.header_type = HEADER_2;
+            packet.propagation = TRANSPORT;
+            packet.transport_id = next_hop_transport_id;
+            if packet.transport_id.is_none() {
+                return Err(NodeError::Unknown);
+            }
+        }
+        let now = self.clock.now_secs();
+        self.links.insert(
+            link_id,
+            LinkEntry {
+                status: LinkStatus::Pending,
+                initiator: true,
+                ephemeral,
+                peer_x25519_pub: None,
+                destination_public: Some(destination_public),
+                derived_key: None,
+                interface,
+                last_activity: now,
+                last_keepalive: now,
+            },
+        );
+        self.outbound.push_back((interface, packet.encode()));
+        Ok(link_id)
+    }
+
+    pub fn link_send<R: EntropySource>(
+        &mut self,
+        link_id: &[u8; 16],
+        plaintext: &[u8],
+        rng: &mut R,
+    ) -> Result<(), NodeError> {
+        let (key, interface) = self
+            .links
+            .get(link_id)
+            .filter(|link| link.status == LinkStatus::Active)
+            .and_then(|link| link.derived_key.map(|key| (key, link.interface)))
+            .ok_or(NodeError::Unknown)?;
+        let mut iv = [0u8; 16];
+        rng.fill(&mut iv);
+        let ciphertext = token::seal_with_key(&key, plaintext, &iv);
+        self.outbound
+            .push_back((interface, Packet::link_data(link_id, ciphertext).encode()));
+        if let Some(link) = self.links.get_mut(link_id) {
+            link.last_activity = self.clock.now_secs();
+        }
+        Ok(())
+    }
+
+    pub fn close_link(&mut self, link_id: &[u8; 16]) {
+        if let Some(link) = self.links.get_mut(link_id)
+            && link.status != LinkStatus::Closed
+        {
+            link.status = LinkStatus::Closed;
+            self.pending_events
+                .push_back(Event::LinkClosed { link_id: *link_id });
+        }
+    }
+
+    pub fn tick(&mut self) -> Vec<Event> {
+        let now = self.clock.now_secs();
+        let mut keepalives = Vec::new();
+        let mut closed = Vec::new();
+        for (id, link) in self.links.iter_mut() {
+            if link.status != LinkStatus::Active {
+                continue;
+            }
+            if now.saturating_sub(link.last_activity) >= LINK_STALE_SECS {
+                link.status = LinkStatus::Closed;
+                closed.push(id.0);
+            } else if link.initiator
+                && now.saturating_sub(link.last_keepalive) >= LINK_KEEPALIVE_SECS
+            {
+                link.last_keepalive = now;
+                keepalives.push((link.interface, id.0));
+            }
+        }
+        for (interface, link_id) in keepalives {
+            self.outbound.push_back((
+                interface,
+                Packet::link_data_with_context(&link_id, alloc::vec![0xFF], KEEPALIVE).encode(),
+            ));
+        }
+        for link_id in closed {
+            self.pending_events.push_back(Event::LinkClosed { link_id });
+        }
+        self.pending_events.drain(..).collect()
+    }
+
     pub fn handle_inbound(&mut self, bytes: &[u8], interface: u16) -> Vec<Event> {
+        self.handle_inbound_inner(bytes, interface, None)
+    }
+
+    pub fn handle_inbound_with_entropy<R: EntropySource>(
+        &mut self,
+        bytes: &[u8],
+        interface: u16,
+        rng: &mut R,
+    ) -> Vec<Event> {
+        self.handle_inbound_inner(bytes, interface, Some(rng))
+    }
+
+    fn handle_inbound_inner(
+        &mut self,
+        bytes: &[u8],
+        interface: u16,
+        rng: Option<&mut dyn EntropySource>,
+    ) -> Vec<Event> {
         let mut packet = match Packet::decode(bytes) {
             Ok(packet) => packet,
             Err(_) => return Vec::new(),
@@ -202,9 +343,171 @@ impl<C: Clock> Node<C> {
             self.handle_path_request(&packet, interface);
             return Vec::new();
         }
+        if packet.packet_type == LINKREQUEST {
+            return match rng {
+                Some(rng) => self.handle_link_request(&packet, &dest_hash, interface, rng),
+                None => Vec::new(),
+            };
+        }
+        if packet.packet_type == PROOF && packet.dest_type == LINK && packet.context == LRPROOF {
+            return self.handle_link_proof(&packet, &dest_hash, rng);
+        }
+        if packet.packet_type == DATA && packet.dest_type == LINK {
+            return self.handle_link_data(&packet, &dest_hash, interface);
+        }
         match packet.packet_type {
             ANNOUNCE => self.handle_announce(&packet, &dest_hash, interface),
             DATA => self.handle_data(&packet, &dest_hash, interface),
+            _ => Vec::new(),
+        }
+    }
+
+    fn handle_link_request(
+        &mut self,
+        packet: &Packet,
+        dest_hash: &[u8; 16],
+        interface: u16,
+        rng: &mut dyn EntropySource,
+    ) -> Vec<Event> {
+        if packet.header_type == HEADER_2
+            && (!self.transport_enabled || packet.transport_id != Some(self.identity.hash()))
+        {
+            return Vec::new();
+        }
+        if !self
+            .locals
+            .iter()
+            .any(|local| &local.dest_hash == dest_hash)
+        {
+            return Vec::new();
+        }
+        let Ok((peer_x25519_pub, _peer_ed25519_pub)) = parse_link_request(&packet.data) else {
+            return Vec::new();
+        };
+        let link_id = link_id_from_request(packet);
+        if self.links.get(&link_id).is_some() {
+            return Vec::new();
+        }
+        let mut x25519_prv = [0u8; 32];
+        let mut ed25519_prv = [0u8; 32];
+        rng.fill(&mut x25519_prv);
+        rng.fill(&mut ed25519_prv);
+        let ephemeral = LinkEphemeral::from_private_bytes(x25519_prv, ed25519_prv);
+        let key = derive_link_key(&ephemeral.x25519_prv, &peer_x25519_pub, &link_id);
+        let proof = build_link_proof(&self.identity, &link_id, &ephemeral);
+        let now = self.clock.now_secs();
+        self.links.insert(
+            link_id,
+            LinkEntry {
+                status: LinkStatus::Active,
+                initiator: false,
+                ephemeral,
+                peer_x25519_pub: Some(peer_x25519_pub),
+                destination_public: None,
+                derived_key: Some(key),
+                interface,
+                last_activity: now,
+                last_keepalive: now,
+            },
+        );
+        self.outbound
+            .push_back((interface, Packet::proof(&link_id, proof, LRPROOF).encode()));
+        alloc::vec![Event::LinkEstablished { link_id }]
+    }
+
+    fn handle_link_proof(
+        &mut self,
+        packet: &Packet,
+        link_id: &[u8; 16],
+        rng: Option<&mut dyn EntropySource>,
+    ) -> Vec<Event> {
+        let Some(link) = self
+            .links
+            .get(link_id)
+            .filter(|link| link.status == LinkStatus::Pending && link.initiator)
+        else {
+            return Vec::new();
+        };
+        let Some(destination_public) = link.destination_public.as_ref() else {
+            return Vec::new();
+        };
+        let peer_x25519_pub = match verify_link_proof(destination_public, link_id, &packet.data) {
+            Ok(public) => public,
+            Err(error) => return alloc::vec![Event::Error(NodeError::Core(error))],
+        };
+        let key = derive_link_key(&link.ephemeral.x25519_prv, &peer_x25519_pub, link_id);
+        let interface = link.interface;
+        let now = self.clock.now_secs();
+        if let Some(link) = self.links.get_mut(link_id) {
+            link.status = LinkStatus::Active;
+            link.peer_x25519_pub = Some(peer_x25519_pub);
+            link.derived_key = Some(key);
+            link.last_activity = now;
+        }
+        if let Some(rng) = rng {
+            let mut iv = [0u8; 16];
+            rng.fill(&mut iv);
+            // RNS expects an encrypted MessagePack float before the responder
+            // finalises its side and invokes the established callback.
+            let rtt = [0xCB, 0, 0, 0, 0, 0, 0, 0, 0];
+            let encrypted = token::seal_with_key(&key, &rtt, &iv);
+            self.outbound.push_back((
+                interface,
+                Packet::link_data_with_context(link_id, encrypted, LRRTT).encode(),
+            ));
+        }
+        alloc::vec![Event::LinkEstablished { link_id: *link_id }]
+    }
+
+    fn handle_link_data(
+        &mut self,
+        packet: &Packet,
+        link_id: &[u8; 16],
+        interface: u16,
+    ) -> Vec<Event> {
+        let Some(link) = self
+            .links
+            .get(link_id)
+            .filter(|link| link.status == LinkStatus::Active && link.interface == interface)
+        else {
+            return Vec::new();
+        };
+        let Some(key) = link.derived_key else {
+            return Vec::new();
+        };
+        if packet.context == KEEPALIVE {
+            if packet.data == [0xFF] {
+                self.outbound.push_back((
+                    interface,
+                    Packet::link_data_with_context(link_id, alloc::vec![0xFE], KEEPALIVE).encode(),
+                ));
+            }
+            if let Some(link) = self.links.get_mut(link_id) {
+                link.last_activity = self.clock.now_secs();
+            }
+            return Vec::new();
+        }
+        let plaintext = match token::open_with_key(&key, &packet.data) {
+            Ok(plaintext) => plaintext,
+            Err(error) => return alloc::vec![Event::Error(NodeError::Core(error))],
+        };
+        if let Some(link) = self.links.get_mut(link_id) {
+            link.last_activity = self.clock.now_secs();
+        }
+        match packet.context {
+            LRRTT => Vec::new(),
+            LINKCLOSE => {
+                if plaintext == link_id {
+                    self.close_link(link_id);
+                    self.tick()
+                } else {
+                    Vec::new()
+                }
+            }
+            0 => alloc::vec![Event::LinkData {
+                link_id: *link_id,
+                plaintext,
+            }],
             _ => Vec::new(),
         }
     }

@@ -170,6 +170,19 @@ fn print_event(event: &Event) {
                 String::from_utf8_lossy(plaintext)
             );
         }
+        Event::LinkEstablished { link_id } => {
+            println!("link established {}", hex::encode(link_id));
+        }
+        Event::LinkData { link_id, plaintext } => {
+            println!(
+                "link data {} {}",
+                hex::encode(link_id),
+                String::from_utf8_lossy(plaintext)
+            );
+        }
+        Event::LinkClosed { link_id } => {
+            println!("link closed {}", hex::encode(link_id));
+        }
         Event::Error(error) => eprintln!("node error: {error:?}"),
     }
 }

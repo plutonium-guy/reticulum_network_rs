@@ -350,3 +350,73 @@ fn two_nodes_announce_and_message_both_directions() {
         reticulum_node::Event::Message { plaintext, .. } if plaintext == b"pong"
     ));
 }
+
+#[test]
+fn two_nodes_establish_link_and_exchange_data_both_directions() {
+    let mut initiator = Node::new(Identity::from_private_bytes(&[41u8; 32], &[42u8; 32]));
+    let mut responder = Node::new(Identity::from_private_bytes(&[43u8; 32], &[44u8; 32]));
+    let responder_dest = responder.register_single_destination("chat", &["linked"]);
+    let mut initiator_rng = SeededRng::new(101);
+    let mut responder_rng = SeededRng::new(202);
+
+    responder.send_announce(&responder_dest, b"", &mut responder_rng, 7);
+    let (_, announce) = responder.poll_outbound().unwrap();
+    initiator.handle_inbound(&announce, 7);
+
+    let link_id = initiator
+        .establish_link(&responder_dest, &mut initiator_rng)
+        .unwrap();
+    let (interface, request) = initiator.poll_outbound().unwrap();
+    assert_eq!(interface, 7);
+    let responder_events = responder.handle_inbound_with_entropy(&request, 7, &mut responder_rng);
+    assert!(matches!(
+        responder_events.as_slice(),
+        [reticulum_node::Event::LinkEstablished { link_id: established }]
+            if established == &link_id
+    ));
+
+    let (_, proof) = responder.poll_outbound().unwrap();
+    let initiator_events = initiator.handle_inbound_with_entropy(&proof, 7, &mut initiator_rng);
+    assert!(matches!(
+        initiator_events.as_slice(),
+        [reticulum_node::Event::LinkEstablished { link_id: established }]
+            if established == &link_id
+    ));
+    // Deliver the initiator's encrypted LRRTT handshake completion.
+    let (_, rtt) = initiator.poll_outbound().unwrap();
+    assert!(
+        responder
+            .handle_inbound_with_entropy(&rtt, 7, &mut responder_rng)
+            .is_empty()
+    );
+
+    initiator
+        .link_send(&link_id, b"linked ping", &mut initiator_rng)
+        .unwrap();
+    let (_, ping) = initiator.poll_outbound().unwrap();
+    assert!(matches!(
+        responder
+            .handle_inbound_with_entropy(&ping, 7, &mut responder_rng)
+            .as_slice(),
+        [reticulum_node::Event::LinkData { link_id: received, plaintext }]
+            if received == &link_id && plaintext == b"linked ping"
+    ));
+
+    responder
+        .link_send(&link_id, b"linked pong", &mut responder_rng)
+        .unwrap();
+    let (_, pong) = responder.poll_outbound().unwrap();
+    assert!(matches!(
+        initiator
+            .handle_inbound_with_entropy(&pong, 7, &mut initiator_rng)
+            .as_slice(),
+        [reticulum_node::Event::LinkData { link_id: received, plaintext }]
+            if received == &link_id && plaintext == b"linked pong"
+    ));
+
+    initiator.close_link(&link_id);
+    assert!(matches!(
+        initiator.tick().as_slice(),
+        [reticulum_node::Event::LinkClosed { link_id: closed }] if closed == &link_id
+    ));
+}

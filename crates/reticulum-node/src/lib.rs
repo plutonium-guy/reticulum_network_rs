@@ -3,6 +3,7 @@
 extern crate alloc;
 
 pub mod clock;
+pub mod link_state;
 pub mod node;
 pub mod path_table;
 pub mod rng;
@@ -20,6 +21,16 @@ pub enum Event {
     Message {
         dest_hash: [u8; 16],
         plaintext: Vec<u8>,
+    },
+    LinkEstablished {
+        link_id: [u8; 16],
+    },
+    LinkData {
+        link_id: [u8; 16],
+        plaintext: Vec<u8>,
+    },
+    LinkClosed {
+        link_id: [u8; 16],
     },
     Error(NodeError),
 }
