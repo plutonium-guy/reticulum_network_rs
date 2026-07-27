@@ -93,6 +93,18 @@ impl LxmfRouter {
         self.unpack_for_local_destination(&packed)
     }
 
+    /// Upload a pre-built propagation container over an established link to
+    /// an `lxmf.propagation` destination.
+    pub fn send_propagation_upload<C: Clock, R: EntropySource>(
+        &self,
+        node: &mut Node<C>,
+        link_id: &[u8; 16],
+        propagation_packed: &[u8],
+        entropy: &mut R,
+    ) -> Result<(), NodeError> {
+        node.link_send(link_id, propagation_packed, entropy)
+    }
+
     fn unpack_for_local_destination(&self, bytes: &[u8]) -> Result<LxmfEvent, CoreError> {
         let message = LxmfMessage::unpack(bytes)?;
         if message.destination != self.local_destination {

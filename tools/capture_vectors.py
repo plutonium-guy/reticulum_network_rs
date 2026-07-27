@@ -92,6 +92,10 @@ RESOURCE_ONLY = "--resource-only" in sys.argv
 DESTTYPES_ONLY = "--desttypes-only" in sys.argv
 IFAC_ONLY = "--ifac-only" in sys.argv
 LXMF_ONLY = "--lxmf-only" in sys.argv
+LXMF_VECTOR_NAMES = {
+    "lxmf_message.json",
+    "lxmf_propagation.json",
+}
 LINK_VECTOR_NAMES = {
     "linkrequest.json",
     "link_handshake.json",
@@ -127,7 +131,7 @@ def w(name, obj):
         return
     if IFAC_ONLY and name != "ifac_frame.json":
         return
-    if LXMF_ONLY and name != "lxmf_message.json":
+    if LXMF_ONLY and name not in LXMF_VECTOR_NAMES:
         return
     with open(os.path.join(OUT, name), "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
@@ -849,6 +853,70 @@ w(
         "packed_hex": hx(lxmf.packed),
         "hash": hx(lxmf.hash),
         "signature": hx(lxmf.signature),
+    },
+)
+
+# --- LXMF 1.1.0 propagation envelope ---
+# LXMessage's propagated representation encrypts everything after the leading
+# delivery hash to the recipient, then wraps one or more resulting blobs in
+# [timebase, [binary...]]. Pin the X25519 secret and Token IV exactly as in
+# token_encrypt.json so the complete envelope is byte-for-byte reproducible.
+propagation_ephemeral = seed("lxmf/propagation/ephemeral-x25519")
+propagation_iv = seed("lxmf/propagation/iv")[:16]
+propagation_timestamp = 1720000001.5
+real_urandom = os.urandom
+identity_module = importlib.import_module("RNS.Identity")
+x25519_private = identity_module.X25519PrivateKey
+real_generate = x25519_private.__dict__["generate"]
+
+try:
+    x25519_private.generate = classmethod(
+        lambda cls: cls.from_private_bytes(propagation_ephemeral)
+    )
+    os.urandom = (
+        lambda length: propagation_iv if length == 16 else real_urandom(length)
+    )
+    propagation_encrypted = lxmf_destination.encrypt(
+        lxmf.packed[LXMF.LXMessage.DESTINATION_LENGTH :]
+    )
+finally:
+    x25519_private.generate = real_generate
+    os.urandom = real_urandom
+
+propagation_lxmf_data = (
+    lxmf.packed[: LXMF.LXMessage.DESTINATION_LENGTH] + propagation_encrypted
+)
+propagation_packed = msgpack.packb(
+    [propagation_timestamp, [propagation_lxmf_data]]
+)
+propagation_identity = RNS.Identity.from_bytes(
+    seed("lxmf/propagation-node/x25519")
+    + seed("lxmf/propagation-node/ed25519")
+)
+propagation_destination = RNS.Destination(
+    propagation_identity,
+    RNS.Destination.OUT,
+    RNS.Destination.SINGLE,
+    "lxmf",
+    "propagation",
+)
+
+w(
+    "lxmf_propagation.json",
+    {
+        "recipient_public": hx(lxmf_destination_identity.get_public_key()),
+        "recipient_prv_x": hx(lxmf_destination_identity.prv_bytes),
+        "recipient_prv_ed": hx(lxmf_destination_identity.sig_prv_bytes),
+        "propagation_node_public": hx(propagation_identity.get_public_key()),
+        "propagation_node_destination": hx(propagation_destination.hash),
+        "ephemeral_prv_x25519": hx(propagation_ephemeral),
+        "iv": hx(propagation_iv),
+        "timestamp": propagation_timestamp,
+        "message_packed": hx(lxmf.packed),
+        "encrypted": hx(propagation_encrypted),
+        "lxmf_data": hx(propagation_lxmf_data),
+        "transient_id": hx(RNS.Identity.full_hash(propagation_lxmf_data)),
+        "propagation_packed": hx(propagation_packed),
     },
 )
 

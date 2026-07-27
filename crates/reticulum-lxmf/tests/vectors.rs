@@ -1,5 +1,8 @@
-use reticulum_core::identity::Identity;
-use reticulum_lxmf::LxmfMessage;
+use reticulum_core::{EntropySource, identity::Identity};
+use reticulum_lxmf::{
+    LxmfMessage, build_propagation_upload, decrypt_propagated_message,
+    propagation_destination_hash, unpack_propagation_container,
+};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -24,6 +27,36 @@ fn vector() -> Vector {
 
 fn bytes<const N: usize>(encoded: &str) -> [u8; N] {
     hex::decode(encoded).unwrap().try_into().unwrap()
+}
+
+#[derive(Deserialize)]
+struct PropagationVector {
+    recipient_public: String,
+    recipient_prv_x: String,
+    recipient_prv_ed: String,
+    propagation_node_public: String,
+    propagation_node_destination: String,
+    ephemeral_prv_x25519: String,
+    iv: String,
+    timestamp: f64,
+    message_packed: String,
+    encrypted: String,
+    lxmf_data: String,
+    transient_id: String,
+    propagation_packed: String,
+}
+
+struct VectorEntropy {
+    bytes: Vec<u8>,
+    position: usize,
+}
+
+impl EntropySource for VectorEntropy {
+    fn fill(&mut self, out: &mut [u8]) {
+        let end = self.position + out.len();
+        out.copy_from_slice(&self.bytes[self.position..end]);
+        self.position = end;
+    }
 }
 
 #[test]
@@ -100,5 +133,68 @@ fn every_truncated_prefix_is_rejected_without_panicking() {
     let packed = hex::decode(expected.packed_hex).unwrap();
     for end in 0..packed.len() {
         assert!(LxmfMessage::unpack(&packed[..end]).is_err());
+    }
+}
+
+#[test]
+fn propagation_upload_matches_python_lxmf_1_1_0() {
+    let expected: PropagationVector =
+        serde_json::from_str(include_str!("../../../vectors/lxmf_propagation.json")).unwrap();
+    let recipient_public = reticulum_core::identity::PublicIdentity::from_bytes(
+        &hex::decode(&expected.recipient_public).unwrap(),
+    )
+    .unwrap();
+    let propagation_public = reticulum_core::identity::PublicIdentity::from_bytes(
+        &hex::decode(&expected.propagation_node_public).unwrap(),
+    )
+    .unwrap();
+    let message = LxmfMessage::unpack(&hex::decode(&expected.message_packed).unwrap()).unwrap();
+    let mut entropy_bytes = hex::decode(&expected.ephemeral_prv_x25519).unwrap();
+    entropy_bytes.extend_from_slice(&hex::decode(&expected.iv).unwrap());
+    let mut entropy = VectorEntropy {
+        bytes: entropy_bytes,
+        position: 0,
+    };
+
+    let upload = build_propagation_upload(
+        &message,
+        &recipient_public,
+        expected.timestamp,
+        None,
+        &mut entropy,
+    )
+    .unwrap();
+    assert_eq!(
+        &upload.lxmf_data[16..],
+        hex::decode(expected.encrypted).unwrap()
+    );
+    assert_eq!(upload.lxmf_data, hex::decode(expected.lxmf_data).unwrap());
+    assert_eq!(upload.transient_id, bytes(&expected.transient_id));
+    assert_eq!(
+        upload.packed,
+        hex::decode(expected.propagation_packed).unwrap()
+    );
+    assert_eq!(
+        propagation_destination_hash(&propagation_public),
+        bytes(&expected.propagation_node_destination)
+    );
+
+    let container = unpack_propagation_container(&upload.packed).unwrap();
+    assert_eq!(container.timestamp, expected.timestamp);
+    assert_eq!(container.messages.len(), 1);
+    assert_eq!(container.messages[0], upload.lxmf_data);
+    let recipient = Identity::from_private_bytes(
+        &bytes(&expected.recipient_prv_x),
+        &bytes(&expected.recipient_prv_ed),
+    );
+    assert_eq!(
+        decrypt_propagated_message(&recipient, &upload.lxmf_data, 0)
+            .unwrap()
+            .pack(),
+        message.pack()
+    );
+
+    for end in 0..upload.packed.len() {
+        assert!(unpack_propagation_container(&upload.packed[..end]).is_err());
     }
 }
