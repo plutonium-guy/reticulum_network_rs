@@ -18,6 +18,19 @@ enum Command {
         dest_hash: [u8; 16],
         plaintext: Vec<u8>,
     },
+    SendWithReceipt {
+        dest_hash: [u8; 16],
+        plaintext: Vec<u8>,
+        reply: oneshot::Sender<Result<[u8; 32], NodeError>>,
+    },
+    SendGroup {
+        dest_hash: [u8; 16],
+        plaintext: Vec<u8>,
+    },
+    SendPlain {
+        dest_hash: [u8; 16],
+        plaintext: Vec<u8>,
+    },
     EstablishLink {
         dest_hash: [u8; 16],
         reply: oneshot::Sender<Result<[u8; 16], NodeError>>,
@@ -60,6 +73,54 @@ impl DriverHandle {
     pub async fn send(&self, dest_hash: [u8; 16], plaintext: &[u8]) -> Result<(), DriverClosed> {
         self.commands
             .send(Command::Send {
+                dest_hash,
+                plaintext: plaintext.to_vec(),
+            })
+            .await
+            .map_err(|_| DriverClosed)
+    }
+
+    pub async fn send_with_receipt(
+        &self,
+        dest_hash: [u8; 16],
+        plaintext: &[u8],
+    ) -> Result<[u8; 32], DriverError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::SendWithReceipt {
+                dest_hash,
+                plaintext: plaintext.to_vec(),
+                reply,
+            })
+            .await
+            .map_err(|_| DriverError::Closed)?;
+        response
+            .await
+            .map_err(|_| DriverError::Closed)?
+            .map_err(DriverError::Node)
+    }
+
+    pub async fn send_group(
+        &self,
+        dest_hash: [u8; 16],
+        plaintext: &[u8],
+    ) -> Result<(), DriverClosed> {
+        self.commands
+            .send(Command::SendGroup {
+                dest_hash,
+                plaintext: plaintext.to_vec(),
+            })
+            .await
+            .map_err(|_| DriverClosed)
+    }
+
+    pub async fn send_plain(
+        &self,
+        dest_hash: [u8; 16],
+        plaintext: &[u8],
+    ) -> Result<(), DriverClosed> {
+        self.commands
+            .send(Command::SendPlain {
                 dest_hash,
                 plaintext: plaintext.to_vec(),
             })
@@ -216,6 +277,37 @@ impl<C: Clock + Send + 'static> Driver<C> {
                         Some(Command::Send { dest_hash, plaintext }) => {
                             if let Err(error) =
                                 self.node.send_message(&dest_hash, &plaintext, &mut self.entropy)
+                            {
+                                self.emit(Event::Error(error)).await;
+                            }
+                            self.drain_outbound().await?;
+                        }
+                        Some(Command::SendWithReceipt {
+                            dest_hash,
+                            plaintext,
+                            reply,
+                        }) => {
+                            let result = self.node.send_message_with_receipt(
+                                &dest_hash,
+                                &plaintext,
+                                &mut self.entropy,
+                            );
+                            let _ = reply.send(result);
+                            self.drain_outbound().await?;
+                        }
+                        Some(Command::SendGroup { dest_hash, plaintext }) => {
+                            if let Err(error) = self.node.send_group_message(
+                                &dest_hash,
+                                &plaintext,
+                                &mut self.entropy,
+                            ) {
+                                self.emit(Event::Error(error)).await;
+                            }
+                            self.drain_outbound().await?;
+                        }
+                        Some(Command::SendPlain { dest_hash, plaintext }) => {
+                            if let Err(error) =
+                                self.node.send_plain_message(&dest_hash, &plaintext)
                             {
                                 self.emit(Event::Error(error)).await;
                             }
@@ -483,6 +575,92 @@ mod tests {
         assert_eq!(completed, resource);
 
         a_handle.close_link(link_id).await.unwrap();
+        a_handle.shutdown().await.unwrap();
+        b_handle.shutdown().await.unwrap();
+        a_task.await.unwrap().unwrap();
+        b_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn drivers_exchange_proved_group_and_plain_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let connect = tokio::spawn(async move { TcpClientInterface::connect(&addr).await });
+        let (server_stream, _) = listener.accept().await.unwrap();
+        let client_interface = connect.await.unwrap().unwrap();
+        let server_interface = TcpClientInterface::from_stream(server_stream);
+
+        let group_key = [0xA5; 64];
+        let mut a_node = Node::new(Identity::from_private_bytes(&[71u8; 32], &[72u8; 32]));
+        let group_dest =
+            a_node.register_group_destination("driver_group", &["messages"], group_key);
+        let plain_dest = a_node.register_plain_destination("driver_plain", &["messages"]);
+        let mut b_node = Node::new(Identity::from_private_bytes(&[73u8; 32], &[74u8; 32]));
+        assert_eq!(
+            group_dest,
+            b_node.register_group_destination("driver_group", &["messages"], group_key)
+        );
+        assert_eq!(
+            plain_dest,
+            b_node.register_plain_destination("driver_plain", &["messages"])
+        );
+        let single_dest = b_node.register_single_destination("driver_proof", &["messages"]);
+        assert!(b_node.set_prove(&single_dest, true));
+
+        let (a_events_tx, mut a_events_rx) = mpsc::channel(16);
+        let (b_events_tx, mut b_events_rx) = mpsc::channel(16);
+        let (a_driver, a_handle) = Driver::new(a_node, client_interface, a_events_tx);
+        let (b_driver, b_handle) = Driver::new(b_node, server_interface, b_events_tx);
+        let a_task = tokio::spawn(a_driver.run());
+        let b_task = tokio::spawn(b_driver.run());
+
+        b_handle.announce_all(b"").await.unwrap();
+        let announce = timeout(Duration::from_secs(2), a_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(announce, Event::Announce { dest_hash, .. } if dest_hash == single_dest));
+        let packet_hash = a_handle
+            .send_with_receipt(single_dest, b"proved over tcp")
+            .await
+            .unwrap();
+        let message = timeout(Duration::from_secs(2), b_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(message, Event::Message { plaintext, .. } if plaintext == b"proved over tcp")
+        );
+        let delivered = timeout(Duration::from_secs(2), a_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(delivered, Event::Delivered { packet_hash });
+
+        a_handle
+            .send_group(group_dest, b"group over tcp")
+            .await
+            .unwrap();
+        let group = timeout(Duration::from_secs(2), b_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(group, Event::Message { plaintext, .. } if plaintext == b"group over tcp")
+        );
+
+        a_handle
+            .send_plain(plain_dest, b"plain over tcp")
+            .await
+            .unwrap();
+        let plain = timeout(Duration::from_secs(2), b_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(plain, Event::Message { plaintext, .. } if plaintext == b"plain over tcp")
+        );
+
         a_handle.shutdown().await.unwrap();
         b_handle.shutdown().await.unwrap();
         a_task.await.unwrap().unwrap();

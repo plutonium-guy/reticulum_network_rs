@@ -17,6 +17,15 @@ enum Mode {
     Send {
         dest_hash: [u8; 16],
         plaintext: Vec<u8>,
+        prove: bool,
+    },
+    SendGroup {
+        dest_hash: [u8; 16],
+        plaintext: Vec<u8>,
+    },
+    SendPlain {
+        dest_hash: [u8; 16],
+        plaintext: Vec<u8>,
     },
     Link {
         dest_hash: [u8; 16],
@@ -51,6 +60,13 @@ async fn run() -> Result<(), Box<dyn Error>> {
     }
     let aspect_refs: Vec<&str> = config.aspects.iter().map(String::as_str).collect();
     let local_dest = node.register_single_destination(&config.app_name, &aspect_refs);
+    if config.prove {
+        node.set_prove(&local_dest, true);
+    }
+    let local_plain = node.register_plain_destination(&config.app_name, &aspect_refs);
+    let local_group = config
+        .group_key()?
+        .map(|key| node.register_group_destination(&config.app_name, &aspect_refs, key));
 
     let mut interfaces = Vec::new();
     for (index, address) in config.peer_addresses().into_iter().enumerate() {
@@ -67,6 +83,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "driver stopped before announce"))?;
     println!("local destination {}", hex::encode(local_dest));
+    println!("local plain destination {}", hex::encode(local_plain));
+    if let Some(group) = local_group {
+        println!("local group destination {}", hex::encode(group));
+    }
 
     match mode {
         Mode::Run => {
@@ -113,25 +133,85 @@ async fn run() -> Result<(), Box<dyn Error>> {
         Mode::Send {
             dest_hash,
             plaintext,
+            prove,
         } => {
+            let mut pending = None;
             while let Some(event) = events_rx.recv().await {
                 print_event(&event);
-                if matches!(
-                    event,
+                match event {
                     Event::Announce {
                         dest_hash: announced,
                         ..
-                    } if announced == dest_hash
-                ) {
-                    handle.send(dest_hash, &plaintext).await.map_err(|_| {
-                        io::Error::new(io::ErrorKind::BrokenPipe, "driver stopped before send")
-                    })?;
-                    println!("sent message to {}", hex::encode(dest_hash));
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    shutdown(&handle).await?;
-                    break;
+                    } if announced == dest_hash && pending.is_none() => {
+                        if prove {
+                            let packet_hash = handle
+                                .send_with_receipt(dest_hash, &plaintext)
+                                .await
+                                .map_err(|error| {
+                                    io::Error::other(format!(
+                                        "could not send with receipt: {error:?}"
+                                    ))
+                                })?;
+                            println!("sent proved message {}", hex::encode(packet_hash));
+                            pending = Some(packet_hash);
+                        } else {
+                            handle.send(dest_hash, &plaintext).await.map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    "driver stopped before send",
+                                )
+                            })?;
+                            println!("sent message to {}", hex::encode(dest_hash));
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            shutdown(&handle).await?;
+                            break;
+                        }
+                    }
+                    Event::Delivered { packet_hash } if Some(packet_hash) == pending => {
+                        println!("delivery confirmed {}", hex::encode(packet_hash));
+                        shutdown(&handle).await?;
+                        break;
+                    }
+                    _ => {}
                 }
             }
+        }
+        Mode::SendGroup {
+            dest_hash,
+            plaintext,
+        } => {
+            if local_group != Some(dest_hash) {
+                return Err("destination does not match group_key_hex and configured name".into());
+            }
+            handle
+                .send_group(dest_hash, &plaintext)
+                .await
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "driver stopped before GROUP send",
+                    )
+                })?;
+            println!("sent group message to {}", hex::encode(dest_hash));
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            shutdown(&handle).await?;
+        }
+        Mode::SendPlain {
+            dest_hash,
+            plaintext,
+        } => {
+            handle
+                .send_plain(dest_hash, &plaintext)
+                .await
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "driver stopped before PLAIN send",
+                    )
+                })?;
+            println!("sent plain message to {}", hex::encode(dest_hash));
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            shutdown(&handle).await?;
         }
         Mode::Link {
             dest_hash,
@@ -282,13 +362,22 @@ fn parse_mode(args: &[String]) -> Result<Mode, Box<dyn Error>> {
     match args.first().map(String::as_str) {
         Some("run") if args.len() == 1 => Ok(Mode::Run),
         Some("announce") if args.len() == 1 => Ok(Mode::Announce),
-        Some("send") if args.len() == 3 => {
+        Some("send") if args.len() == 3 || (args.len() == 4 && args[3] == "--prove") => {
             let dest_hash = parse_hash(&args[1], "destination")?;
             Ok(Mode::Send {
                 dest_hash,
                 plaintext: args[2].as_bytes().to_vec(),
+                prove: args.get(3).is_some_and(|argument| argument == "--prove"),
             })
         }
+        Some("send-group") if args.len() == 3 => Ok(Mode::SendGroup {
+            dest_hash: parse_hash(&args[1], "destination")?,
+            plaintext: args[2].as_bytes().to_vec(),
+        }),
+        Some("send-plain") if args.len() == 3 => Ok(Mode::SendPlain {
+            dest_hash: parse_hash(&args[1], "destination")?,
+            plaintext: args[2].as_bytes().to_vec(),
+        }),
         Some("link") if args.len() == 2 => Ok(Mode::Link {
             dest_hash: parse_hash(&args[1], "destination")?,
             plaintext: None,
@@ -307,7 +396,7 @@ fn parse_mode(args: &[String]) -> Result<Mode, Box<dyn Error>> {
             out_dir: PathBuf::from(&args[1]),
         }),
         _ => Err(
-            "usage: reticulumd <run|announce|send DEST_HASH TEXT|link DEST_HASH|link-send DEST_HASH TEXT|send-file DEST_HASH PATH|receive-file OUT_DIR> [--config PATH]"
+            "usage: reticulumd <run|announce|send DEST_HASH TEXT [--prove]|send-group DEST_HASH TEXT|send-plain DEST_HASH TEXT|link DEST_HASH|link-send DEST_HASH TEXT|send-file DEST_HASH PATH|receive-file OUT_DIR> [--config PATH]"
                 .into(),
         ),
     }
@@ -340,6 +429,9 @@ fn print_event(event: &Event) {
                 hex::encode(dest_hash),
                 String::from_utf8_lossy(plaintext)
             );
+        }
+        Event::Delivered { packet_hash } => {
+            println!("delivered {}", hex::encode(packet_hash));
         }
         Event::LinkEstablished { link_id } => {
             println!("link established {}", hex::encode(link_id));

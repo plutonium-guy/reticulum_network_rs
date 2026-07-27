@@ -22,6 +22,8 @@ pub struct Config {
     pub app_data: String,
     pub announce_interval_secs: u64,
     pub link_echo: bool,
+    pub prove: bool,
+    pub group_key_hex: Option<String>,
 }
 
 impl Default for Config {
@@ -36,6 +38,8 @@ impl Default for Config {
             app_data: String::new(),
             announce_interval_secs: 30,
             link_echo: false,
+            prove: false,
+            group_key_hex: None,
         }
     }
 }
@@ -104,6 +108,14 @@ impl Config {
         {
             self.link_echo = enabled;
         }
+        if let Ok(value) = std::env::var("RETICULUM_PROVE")
+            && let Ok(enabled) = value.parse()
+        {
+            self.prove = enabled;
+        }
+        if let Ok(value) = std::env::var("RETICULUM_GROUP_KEY") {
+            self.group_key_hex = Some(value);
+        }
     }
 
     pub fn peer_addresses(&self) -> Vec<&str> {
@@ -112,6 +124,21 @@ impl Config {
         } else {
             self.tcp_peers.iter().map(String::as_str).collect()
         }
+    }
+
+    pub fn group_key(&self) -> io::Result<Option<[u8; 64]>> {
+        let Some(encoded) = self.group_key_hex.as_deref() else {
+            return Ok(None);
+        };
+        let decoded = hex::decode(encoded)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let key = decoded.try_into().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "group key must be exactly 64 bytes",
+            )
+        })?;
+        Ok(Some(key))
     }
 }
 
