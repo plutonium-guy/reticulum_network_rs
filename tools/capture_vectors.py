@@ -88,11 +88,17 @@ TRANSPORT_ONLY = "--transport-only" in sys.argv
 PATH_REQUEST_ONLY = "--path-request-only" in sys.argv
 KEYED_TOKEN_ONLY = "--keyed-token-only" in sys.argv
 LINK_ONLY = "--link-only" in sys.argv
+RESOURCE_ONLY = "--resource-only" in sys.argv
 LINK_VECTOR_NAMES = {
     "linkrequest.json",
     "link_handshake.json",
     "link_proof.json",
     "link_data.json",
+}
+RESOURCE_VECTOR_NAMES = {
+    "resource_advertisement.json",
+    "resource_maphash.json",
+    "resource_proof.json",
 }
 
 
@@ -106,6 +112,8 @@ def w(name, obj):
     if KEYED_TOKEN_ONLY and name != "token_keyed.json":
         return
     if LINK_ONLY and name not in LINK_VECTOR_NAMES:
+        return
+    if RESOURCE_ONLY and name not in RESOURCE_VECTOR_NAMES:
         return
     with open(os.path.join(OUT, name), "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
@@ -310,6 +318,9 @@ class _VectorLink:
     type = RNS.Destination.LINK
     status = RNS.Link.ACTIVE
     mtu = RNS.Reticulum.MTU
+    mdu = RNS.Link.MDU
+    rtt = 0.1
+    traffic_timeout_factor = 6
 
     def __init__(self, vector_link_id, vector_key):
         self.hash = vector_link_id
@@ -340,6 +351,89 @@ w(
         "plaintext": hx(link_plaintext),
         "packet_bytes": hx(link_data_packet.raw),
         "dest_type": RNS.Destination.LINK,
+    },
+)
+
+# --- deterministic Resource advertisement, hashmap and proof ---
+# Resource encrypts its entire random-prefix+payload stream once and then
+# slices that token into RESOURCE parts. The parts themselves are not
+# individually encrypted by Packet.pack().
+resource_plaintext = (b"reticulum-resource-vector-" * 50)[:1200]
+resource_prefix_source = seed("resource/prefix/source")[:16]
+resource_token_iv = seed("resource/token/iv")[:16]
+resource_map_source = seed("resource/map/source")[:16]
+resource_urandom_values = iter(
+    [resource_prefix_source, resource_token_iv, resource_map_source]
+)
+
+
+def resource_urandom(length):
+    value = next(resource_urandom_values)
+    assert length == 16 and len(value) == length
+    return value
+
+
+real_urandom = os.urandom
+try:
+    os.urandom = resource_urandom
+    resource = RNS.Resource(
+        resource_plaintext,
+        vector_link,
+        advertise=False,
+        auto_compress=False,
+    )
+finally:
+    os.urandom = real_urandom
+
+resource_adv = RNS.ResourceAdvertisement(resource).pack()
+# The prefix and resource random hash are SHA-256-truncated outputs of the
+# deterministic 16-byte sources above.
+prefix = hashlib.sha256(resource_prefix_source).digest()[:16][: RNS.Resource.RANDOM_HASH_SIZE]
+assert Token(link_derived_key).decrypt(b"".join(part.data for part in resource.parts)) == (
+    prefix + resource_plaintext
+)
+
+w(
+    "resource_advertisement.json",
+    {
+        "packed_hex": hx(resource_adv),
+        "fields": {
+            "t": resource.size,
+            "d": resource.total_size,
+            "n": len(resource.parts),
+            "h": hx(resource.hash),
+            "r": hx(resource.random_hash),
+            "o": hx(resource.original_hash),
+            "i": resource.segment_index,
+            "l": resource.total_segments,
+            "q": None,
+            "f": RNS.ResourceAdvertisement(resource).f,
+            "m": hx(resource.hashmap),
+        },
+    },
+)
+w(
+    "resource_maphash.json",
+    {
+        "derived_key": hx(link_derived_key),
+        "iv": hx(resource_token_iv),
+        "random_prefix": hx(prefix),
+        "random_hash": hx(resource.random_hash),
+        "plaintext": hx(resource_plaintext),
+        "encrypted_stream": hx(b"".join(part.data for part in resource.parts)),
+        "sdu": resource.sdu,
+        "parts": [hx(part.data) for part in resource.parts],
+        "map_hashes": [hx(part.map_hash) for part in resource.parts],
+        "hashmap": hx(resource.hashmap),
+        "resource_hash": hx(resource.hash),
+    },
+)
+w(
+    "resource_proof.json",
+    {
+        "resource_hash": hx(resource.hash),
+        "proof": hx(resource.expected_proof),
+        "proof_data": hx(resource.hash + resource.expected_proof),
     },
 )
 

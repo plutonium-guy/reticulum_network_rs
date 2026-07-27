@@ -12,6 +12,7 @@ aes.workspace = true
 cbc = { workspace = true, features = ["alloc", "block-padding"] }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 x25519-dalek = { workspace = true, features = ["static_secrets"] }
+rmp.workspace = true
 
 [dev-dependencies]
 serde.workspace = true

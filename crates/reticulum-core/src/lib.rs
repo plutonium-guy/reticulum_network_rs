@@ -8,6 +8,7 @@ pub mod hash;
 pub mod identity;
 pub mod link;
 pub mod packet;
+pub mod resource;
 pub mod token;
 
 /// Randomness injected into sans-I/O protocol code.

@@ -1,0 +1,16 @@
+{
+  "fields": {
+    "d": 1200,
+    "f": 1,
+    "h": "edf4d88724eafcd112602be83a6eb778c562d47a36f80329ce6ebe38b09ad5ca",
+    "i": 1,
+    "l": 1,
+    "m": "6f655c7d824e6ea88f520c6b",
+    "n": 3,
+    "o": "edf4d88724eafcd112602be83a6eb778c562d47a36f80329ce6ebe38b09ad5ca",
+    "q": null,
+    "r": "f09abdf1",
+    "t": 1264
+  },
+  "packed_hex": "8ba174cd04f0a164cd04b0a16e03a168c420edf4d88724eafcd112602be83a6eb778c562d47a36f80329ce6ebe38b09ad5caa172c404f09abdf1a16fc420edf4d88724eafcd112602be83a6eb778c562d47a36f80329ce6ebe38b09ad5caa16901a16c01a171c0a16601a16dc40c6f655c7d824e6ea88f520c6b"
+}

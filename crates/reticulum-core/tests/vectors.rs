@@ -224,6 +224,43 @@ fn resource_link_context_packet_roundtrips() {
 }
 
 #[test]
+fn resource_advertisement_matches_rns_vector() {
+    use reticulum_core::resource::ResourceAdvertisement;
+
+    let vector = load("resource_advertisement.json");
+    let packed = hex::decode(vector["packed_hex"].as_str().unwrap()).unwrap();
+    let fields = &vector["fields"];
+    let advertisement = ResourceAdvertisement::unpack(&packed).unwrap();
+    assert_eq!(advertisement.t, fields["t"].as_u64().unwrap());
+    assert_eq!(advertisement.d, fields["d"].as_u64().unwrap());
+    assert_eq!(u64::from(advertisement.n), fields["n"].as_u64().unwrap());
+    assert_eq!(
+        advertisement.h,
+        hex::decode(fields["h"].as_str().unwrap()).unwrap()
+    );
+    assert_eq!(
+        advertisement.r,
+        hex::decode(fields["r"].as_str().unwrap()).unwrap()
+    );
+    assert_eq!(
+        advertisement.o,
+        hex::decode(fields["o"].as_str().unwrap()).unwrap()
+    );
+    assert_eq!(u64::from(advertisement.i), fields["i"].as_u64().unwrap());
+    assert_eq!(u64::from(advertisement.l), fields["l"].as_u64().unwrap());
+    assert_eq!(advertisement.q, None);
+    assert_eq!(u64::from(advertisement.f), fields["f"].as_u64().unwrap());
+    assert_eq!(
+        advertisement.m,
+        hex::decode(fields["m"].as_str().unwrap()).unwrap()
+    );
+    assert_eq!(
+        ResourceAdvertisement::unpack(&advertisement.pack()).unwrap(),
+        advertisement
+    );
+}
+
+#[test]
 fn link_request_and_ephemeral_keys_match_rns_vector() {
     use reticulum_core::{
         EntropySource,
