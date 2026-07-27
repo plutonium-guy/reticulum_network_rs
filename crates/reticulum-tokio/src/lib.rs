@@ -1,6 +1,7 @@
 pub mod driver;
 pub mod interface;
 pub mod tcp;
+pub mod udp;
 
 use reticulum_node::clock::Clock;
 use reticulum_node::rng::EntropySource;
