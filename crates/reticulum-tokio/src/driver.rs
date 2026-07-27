@@ -8,6 +8,7 @@ use std::{
     },
 };
 
+use reticulum_lxmf::{LxmfEvent, LxmfMessage, LxmfRouter};
 use reticulum_node::{Event, NodeError, clock::Clock, node::Node};
 use tokio::{
     sync::{mpsc, oneshot},
@@ -52,6 +53,20 @@ enum Command {
         link_id: [u8; 16],
         data: Vec<u8>,
         reply: oneshot::Sender<Result<[u8; 32], NodeError>>,
+    },
+    LxmfSendOpportunistic {
+        dest_hash: [u8; 16],
+        title: Vec<u8>,
+        content: Vec<u8>,
+        fields: Vec<u8>,
+        reply: oneshot::Sender<Result<(), NodeError>>,
+    },
+    LxmfSendDirect {
+        dest_hash: [u8; 16],
+        title: Vec<u8>,
+        content: Vec<u8>,
+        fields: Vec<u8>,
+        reply: oneshot::Sender<Result<[u8; 16], NodeError>>,
     },
     CloseLink([u8; 16]),
     Shutdown,
@@ -186,6 +201,54 @@ impl DriverHandle {
             .map_err(DriverError::Node)
     }
 
+    pub async fn lxmf_send_opportunistic(
+        &self,
+        dest_hash: [u8; 16],
+        title: &[u8],
+        content: &[u8],
+        fields_msgpack: &[u8],
+    ) -> Result<(), DriverError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::LxmfSendOpportunistic {
+                dest_hash,
+                title: title.to_vec(),
+                content: content.to_vec(),
+                fields: fields_msgpack.to_vec(),
+                reply,
+            })
+            .await
+            .map_err(|_| DriverError::Closed)?;
+        response
+            .await
+            .map_err(|_| DriverError::Closed)?
+            .map_err(DriverError::Node)
+    }
+
+    pub async fn lxmf_send_direct(
+        &self,
+        dest_hash: [u8; 16],
+        title: &[u8],
+        content: &[u8],
+        fields_msgpack: &[u8],
+    ) -> Result<[u8; 16], DriverError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::LxmfSendDirect {
+                dest_hash,
+                title: title.to_vec(),
+                content: content.to_vec(),
+                fields: fields_msgpack.to_vec(),
+                reply,
+            })
+            .await
+            .map_err(|_| DriverError::Closed)?;
+        response
+            .await
+            .map_err(|_| DriverError::Closed)?
+            .map_err(DriverError::Node)
+    }
+
     pub async fn shutdown(&self) -> Result<(), DriverClosed> {
         self.commands
             .send(Command::Shutdown)
@@ -219,6 +282,12 @@ pub struct Driver<C: Clock> {
     entropy: OsEntropy,
     commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<Event>,
+    lxmf: Option<LxmfRuntime>,
+}
+
+struct LxmfRuntime {
+    router: LxmfRouter,
+    pending_direct: BTreeMap<[u8; 16], LxmfMessage>,
 }
 
 /// Registration handle for interfaces created after the driver starts, such
@@ -275,12 +344,44 @@ impl<C: Clock + Send + 'static> Driver<C> {
         (driver, handle)
     }
 
+    pub fn new_lxmf(
+        node: Node<C>,
+        interface: TcpClientInterface,
+        events: mpsc::Sender<Event>,
+    ) -> (Self, DriverHandle, [u8; 16]) {
+        Self::new_lxmf_interfaces(
+            node,
+            vec![Box::new(interface) as Box<dyn AsyncInterface>],
+            events,
+        )
+    }
+
+    pub fn new_lxmf_interfaces(
+        node: Node<C>,
+        interfaces: Vec<Box<dyn AsyncInterface>>,
+        events: mpsc::Sender<Event>,
+    ) -> (Self, DriverHandle, [u8; 16]) {
+        let (mut driver, handle, _) = Self::build(node, interfaces, events, false);
+        let destination = driver.enable_lxmf();
+        (driver, handle, destination)
+    }
+
     pub fn new_dynamic(
         node: Node<C>,
         interfaces: Vec<Box<dyn AsyncInterface>>,
         events: mpsc::Sender<Event>,
     ) -> (Self, DriverHandle, InterfaceRegistrar) {
         Self::build(node, interfaces, events, true)
+    }
+
+    pub fn new_lxmf_dynamic(
+        node: Node<C>,
+        interfaces: Vec<Box<dyn AsyncInterface>>,
+        events: mpsc::Sender<Event>,
+    ) -> (Self, DriverHandle, InterfaceRegistrar, [u8; 16]) {
+        let (mut driver, handle, registrar) = Self::build(node, interfaces, events, true);
+        let destination = driver.enable_lxmf();
+        (driver, handle, registrar, destination)
     }
 
     fn build(
@@ -316,12 +417,24 @@ impl<C: Clock + Send + 'static> Driver<C> {
                 entropy: OsEntropy,
                 commands: commands_rx,
                 events,
+                lxmf: None,
             },
             DriverHandle {
                 commands: commands_tx,
             },
             registrar,
         )
+    }
+
+    fn enable_lxmf(&mut self) -> [u8; 16] {
+        let router = LxmfRouter::new(&self.node.identity().public());
+        let destination = self.node.register_single_destination("lxmf", &["delivery"]);
+        debug_assert_eq!(destination, router.local_destination());
+        self.lxmf = Some(LxmfRuntime {
+            router,
+            pending_direct: BTreeMap::new(),
+        });
+        destination
     }
 
     pub async fn run(mut self) -> std::io::Result<()> {
@@ -406,11 +519,59 @@ impl<C: Clock + Send + 'static> Driver<C> {
                             let _ = reply.send(result);
                             self.drain_outbound().await?;
                         }
+                        Some(Command::LxmfSendOpportunistic {
+                            dest_hash,
+                            title,
+                            content,
+                            fields,
+                            reply,
+                        }) => {
+                            let result = self.lxmf_message(
+                                dest_hash,
+                                &title,
+                                &content,
+                                &fields,
+                            ).and_then(|message| {
+                                let Some(lxmf) = self.lxmf.as_ref() else {
+                                    return Err(NodeError::Unknown);
+                                };
+                                lxmf.router.send_opportunistic(
+                                    &mut self.node,
+                                    &message,
+                                    &mut self.entropy,
+                                )
+                            });
+                            let _ = reply.send(result);
+                            self.drain_outbound().await?;
+                        }
+                        Some(Command::LxmfSendDirect {
+                            dest_hash,
+                            title,
+                            content,
+                            fields,
+                            reply,
+                        }) => {
+                            let result = self.lxmf_message(
+                                dest_hash,
+                                &title,
+                                &content,
+                                &fields,
+                            ).and_then(|message| {
+                                let link_id =
+                                    self.node.establish_link(&dest_hash, &mut self.entropy)?;
+                                let Some(lxmf) = self.lxmf.as_mut() else {
+                                    return Err(NodeError::Unknown);
+                                };
+                                lxmf.pending_direct.insert(link_id, message);
+                                Ok(link_id)
+                            });
+                            let _ = reply.send(result);
+                            self.drain_outbound().await?;
+                        }
                         Some(Command::CloseLink(link_id)) => {
                             self.node.close_link(&link_id);
-                            for event in self.node.tick() {
-                                self.emit(event).await;
-                            }
+                            let events = self.node.tick();
+                            self.emit_node_events(events).await;
                             self.drain_outbound().await?;
                         }
                         Some(Command::Shutdown) | None => return Ok(()),
@@ -419,13 +580,12 @@ impl<C: Clock + Send + 'static> Driver<C> {
                 inbound = self.inbound.recv() => {
                     match inbound {
                         Some(Inbound::Packet { interface, bytes }) => {
-                            for event in self.node.handle_inbound_with_entropy(
+                            let events = self.node.handle_inbound_with_entropy(
                                 &bytes,
                                 interface,
                                 &mut self.entropy,
-                            ) {
-                                self.emit(event).await;
-                            }
+                            );
+                            self.emit_node_events(events).await;
                             self.drain_outbound().await?;
                         }
                         Some(Inbound::Closed { interface }) => {
@@ -483,11 +643,83 @@ impl<C: Clock + Send + 'static> Driver<C> {
                     }
                 }
                 _ = tick.tick() => {
-                    for event in self.node.tick_with_entropy(&mut self.entropy) {
-                        self.emit(event).await;
-                    }
+                    let events = self.node.tick_with_entropy(&mut self.entropy);
+                    self.emit_node_events(events).await;
                     self.drain_outbound().await?;
                 }
+            }
+        }
+    }
+
+    fn lxmf_message(
+        &self,
+        destination: [u8; 16],
+        title: &[u8],
+        content: &[u8],
+        fields: &[u8],
+    ) -> Result<LxmfMessage, NodeError> {
+        let lxmf = self.lxmf.as_ref().ok_or(NodeError::Unknown)?;
+        Ok(LxmfMessage::build(
+            self.node.identity(),
+            destination,
+            lxmf.router.local_destination(),
+            self.node.now_secs() as f64,
+            title,
+            content,
+            fields,
+        ))
+    }
+
+    async fn emit_node_events(&mut self, events: Vec<Event>) {
+        for event in events {
+            if let Event::Announce { dest_hash, .. } = &event
+                && let Some(public) = self.node.path_public(dest_hash)
+                && let Some(lxmf) = self.lxmf.as_mut()
+            {
+                lxmf.router.remember_source(public);
+            }
+
+            let mut send_error = None;
+            if let Event::LinkEstablished { link_id } = &event
+                && let Some(lxmf) = self.lxmf.as_mut()
+                && let Some(message) = lxmf.pending_direct.remove(link_id)
+                && let Err(error) =
+                    lxmf.router
+                        .send_direct(&mut self.node, link_id, &message, &mut self.entropy)
+            {
+                send_error = Some(error);
+            }
+
+            let event = match event {
+                Event::Message {
+                    dest_hash,
+                    plaintext,
+                } => match self.lxmf.as_ref().and_then(|lxmf| {
+                    lxmf.router
+                        .receive_opportunistic(dest_hash, &plaintext)
+                        .ok()
+                }) {
+                    Some(lxmf) => lxmf_event(lxmf),
+                    None => Event::Message {
+                        dest_hash,
+                        plaintext,
+                    },
+                },
+                Event::LinkData { link_id, plaintext } => {
+                    match self
+                        .lxmf
+                        .as_ref()
+                        .and_then(|lxmf| lxmf.router.receive_direct(&plaintext).ok())
+                    {
+                        Some(lxmf) => lxmf_event(lxmf),
+                        None => Event::LinkData { link_id, plaintext },
+                    }
+                }
+                event => event,
+            };
+            self.emit(event).await;
+            if let Some(error) = send_error {
+                self.emit(Event::Error(error)).await;
             }
         }
     }
@@ -508,6 +740,19 @@ impl<C: Clock + Send + 'static> Driver<C> {
 
     async fn emit(&self, event: Event) {
         let _ = self.events.send(event).await;
+    }
+}
+
+fn lxmf_event(event: LxmfEvent) -> Event {
+    match event {
+        LxmfEvent::Message(message) => Event::LxmfMessage {
+            destination: message.destination,
+            source: message.source,
+            timestamp: message.timestamp,
+            title: message.title,
+            content: message.content,
+            fields: message.fields,
+        },
     }
 }
 
@@ -620,6 +865,115 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(message, Event::Message { plaintext, .. } if plaintext == b"over tcp"));
+
+        a_handle.shutdown().await.unwrap();
+        b_handle.shutdown().await.unwrap();
+        a_task.await.unwrap().unwrap();
+        b_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn lxmf_enabled_drivers_exchange_verified_messages() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let connect = tokio::spawn(async move { TcpClientInterface::connect(&addr).await });
+        let (server_stream, _) = listener.accept().await.unwrap();
+        let client_interface = connect.await.unwrap().unwrap();
+        let server_interface = TcpClientInterface::from_stream(server_stream);
+
+        let a_node = Node::new(Identity::from_private_bytes(&[21u8; 32], &[22u8; 32]));
+        let b_node = Node::new(Identity::from_private_bytes(&[23u8; 32], &[24u8; 32]));
+        let (a_events_tx, mut a_events_rx) = mpsc::channel(16);
+        let (b_events_tx, mut b_events_rx) = mpsc::channel(16);
+        let (a_driver, a_handle, a_destination) =
+            Driver::new_lxmf(a_node, client_interface, a_events_tx);
+        let (b_driver, b_handle, b_destination) =
+            Driver::new_lxmf(b_node, server_interface, b_events_tx);
+        let a_task = tokio::spawn(a_driver.run());
+        let b_task = tokio::spawn(b_driver.run());
+
+        a_handle.announce_all(b"").await.unwrap();
+        b_handle.announce_all(b"").await.unwrap();
+        let a_announce = timeout(Duration::from_secs(2), a_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(a_announce, Event::Announce { dest_hash, .. } if dest_hash == b_destination)
+        );
+        let b_announce = timeout(Duration::from_secs(2), b_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(b_announce, Event::Announce { dest_hash, .. } if dest_hash == a_destination)
+        );
+
+        a_handle
+            .lxmf_send_opportunistic(
+                b_destination,
+                b"one packet",
+                b"hello opportunistically",
+                &[0x80],
+            )
+            .await
+            .unwrap();
+        let opportunistic = timeout(Duration::from_secs(2), b_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            opportunistic,
+            Event::LxmfMessage {
+                destination,
+                source,
+                title,
+                content,
+                ..
+            } if destination == b_destination
+                && source == a_destination
+                && title == b"one packet"
+                && content == b"hello opportunistically"
+        ));
+
+        let link_id = b_handle
+            .lxmf_send_direct(a_destination, b"over a link", b"hello directly", &[0x80])
+            .await
+            .unwrap();
+        let direct = timeout(Duration::from_secs(2), async {
+            loop {
+                let event = a_events_rx.recv().await.unwrap();
+                if matches!(event, Event::LxmfMessage { .. }) {
+                    break event;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            direct,
+            Event::LxmfMessage {
+                destination,
+                source,
+                title,
+                content,
+                ..
+            } if destination == a_destination
+                && source == b_destination
+                && title == b"over a link"
+                && content == b"hello directly"
+        ));
+        let established = timeout(Duration::from_secs(2), async {
+            loop {
+                let event = b_events_rx.recv().await.unwrap();
+                if matches!(event, Event::LinkEstablished { .. }) {
+                    break event;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(established, Event::LinkEstablished { link_id });
 
         a_handle.shutdown().await.unwrap();
         b_handle.shutdown().await.unwrap();

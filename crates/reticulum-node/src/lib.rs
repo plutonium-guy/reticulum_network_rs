@@ -23,6 +23,14 @@ pub enum Event {
         dest_hash: [u8; 16],
         plaintext: Vec<u8>,
     },
+    LxmfMessage {
+        destination: [u8; 16],
+        source: [u8; 16],
+        timestamp: f64,
+        title: Vec<u8>,
+        content: Vec<u8>,
+        fields: Vec<u8>,
+    },
     Delivered {
         packet_hash: [u8; 32],
     },

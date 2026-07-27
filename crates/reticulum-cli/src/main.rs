@@ -40,6 +40,13 @@ enum Mode {
     ReceiveFile {
         out_dir: PathBuf,
     },
+    LxmfSend {
+        dest_hash: [u8; 16],
+        title: Vec<u8>,
+        content: Vec<u8>,
+        direct: bool,
+    },
+    LxmfReceive,
 }
 
 #[tokio::main]
@@ -128,11 +135,26 @@ async fn run() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+    let lxmf_enabled = matches!(mode, Mode::LxmfSend { .. } | Mode::LxmfReceive);
     let (events_tx, mut events_rx) = mpsc::channel(64);
-    let (driver, handle) = if servers.is_empty() {
-        Driver::new_interfaces(node, interfaces, events_tx)
+    let (driver, handle, registrar, lxmf_destination) = if servers.is_empty() {
+        if lxmf_enabled {
+            let (driver, handle, destination) =
+                Driver::new_lxmf_interfaces(node, interfaces, events_tx);
+            (driver, handle, None, Some(destination))
+        } else {
+            let (driver, handle) = Driver::new_interfaces(node, interfaces, events_tx);
+            (driver, handle, None, None)
+        }
+    } else if lxmf_enabled {
+        let (driver, handle, registrar, destination) =
+            Driver::new_lxmf_dynamic(node, interfaces, events_tx);
+        (driver, handle, Some(registrar), Some(destination))
     } else {
         let (driver, handle, registrar) = Driver::new_dynamic(node, interfaces, events_tx);
+        (driver, handle, Some(registrar), None)
+    };
+    if let Some(registrar) = registrar {
         for (server, ifac) in servers {
             let registrar = registrar.clone();
             tokio::spawn(async move {
@@ -142,8 +164,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             });
         }
         drop(registrar);
-        (driver, handle)
-    };
+    }
     let driver_task = tokio::spawn(driver.run());
     handle
         .announce_all(config.app_data.as_bytes())
@@ -153,6 +174,9 @@ async fn run() -> Result<(), Box<dyn Error>> {
     println!("local plain destination {}", hex::encode(local_plain));
     if let Some(group) = local_group {
         println!("local group destination {}", hex::encode(group));
+    }
+    if let Some(destination) = lxmf_destination {
+        println!("local lxmf destination {}", hex::encode(destination));
     }
 
     match mode {
@@ -407,6 +431,86 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
+        Mode::LxmfSend {
+            dest_hash,
+            title,
+            content,
+            direct,
+        } => {
+            let mut pending_link = None;
+            while let Some(event) = events_rx.recv().await {
+                print_event(&event);
+                match event {
+                    Event::Announce {
+                        dest_hash: announced,
+                        ..
+                    } if announced == dest_hash && pending_link.is_none() => {
+                        if direct {
+                            let link_id = handle
+                                .lxmf_send_direct(dest_hash, &title, &content, &[0x80])
+                                .await
+                                .map_err(|error| {
+                                    io::Error::other(format!(
+                                        "could not send direct LXMF message: {error:?}"
+                                    ))
+                                })?;
+                            println!("lxmf link requested {}", hex::encode(link_id));
+                            pending_link = Some(link_id);
+                        } else {
+                            handle
+                                .lxmf_send_opportunistic(dest_hash, &title, &content, &[0x80])
+                                .await
+                                .map_err(|error| {
+                                    io::Error::other(format!(
+                                        "could not send opportunistic LXMF message: {error:?}"
+                                    ))
+                                })?;
+                            println!(
+                                "sent opportunistic lxmf message to {}",
+                                hex::encode(dest_hash)
+                            );
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                            shutdown(&handle).await?;
+                            break;
+                        }
+                    }
+                    Event::LinkEstablished { link_id }
+                        if direct && Some(link_id) == pending_link =>
+                    {
+                        println!("sent direct lxmf message on {}", hex::encode(link_id));
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        shutdown(&handle).await?;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Mode::LxmfReceive => {
+            let mut announce_interval =
+                tokio::time::interval(Duration::from_secs(config.announce_interval_secs.max(1)));
+            announce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            announce_interval.tick().await;
+            loop {
+                tokio::select! {
+                    event = events_rx.recv() => {
+                        let Some(event) = event else {
+                            break;
+                        };
+                        print_event(&event);
+                    }
+                    _ = announce_interval.tick() => {
+                        handle
+                            .announce_all(config.app_data.as_bytes())
+                            .await
+                            .map_err(|_| io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "driver stopped before periodic LXMF announce",
+                            ))?;
+                    }
+                }
+            }
+        }
     }
 
     driver_task.await??;
@@ -495,8 +599,28 @@ fn parse_mode(args: &[String]) -> Result<Mode, Box<dyn Error>> {
         Some("receive-file") if args.len() == 2 => Ok(Mode::ReceiveFile {
             out_dir: PathBuf::from(&args[1]),
         }),
+        Some("lxmf")
+            if matches!(args.get(1).map(String::as_str), Some("send"))
+                && (args.len() == 5 || args.len() == 6) =>
+        {
+            let method = args.get(5).map(String::as_str).unwrap_or("--direct");
+            if !matches!(method, "--direct" | "--opportunistic") {
+                return Err("LXMF method must be --direct or --opportunistic".into());
+            }
+            Ok(Mode::LxmfSend {
+                dest_hash: parse_hash(&args[2], "destination")?,
+                title: args[3].as_bytes().to_vec(),
+                content: args[4].as_bytes().to_vec(),
+                direct: method == "--direct",
+            })
+        }
+        Some("lxmf")
+            if matches!(args.get(1).map(String::as_str), Some("recv")) && args.len() == 2 =>
+        {
+            Ok(Mode::LxmfReceive)
+        }
         _ => Err(
-            "usage: reticulumd <run|announce|send DEST_HASH TEXT [--prove]|send-group DEST_HASH TEXT|send-plain DEST_HASH TEXT|link DEST_HASH|link-send DEST_HASH TEXT|send-file DEST_HASH PATH|receive-file OUT_DIR> [--config PATH]"
+            "usage: reticulumd <run|announce|send DEST_HASH TEXT [--prove]|send-group DEST_HASH TEXT|send-plain DEST_HASH TEXT|link DEST_HASH|link-send DEST_HASH TEXT|send-file DEST_HASH PATH|receive-file OUT_DIR|lxmf send DEST_HASH TITLE CONTENT [--direct|--opportunistic]|lxmf recv> [--config PATH]"
                 .into(),
         ),
     }
@@ -528,6 +652,23 @@ fn print_event(event: &Event) {
                 "message {} {}",
                 hex::encode(dest_hash),
                 String::from_utf8_lossy(plaintext)
+            );
+        }
+        Event::LxmfMessage {
+            destination,
+            source,
+            timestamp,
+            title,
+            content,
+            fields,
+        } => {
+            println!(
+                "lxmf message {} {} timestamp={timestamp} title={} content={} fields={}",
+                hex::encode(destination),
+                hex::encode(source),
+                String::from_utf8_lossy(title),
+                String::from_utf8_lossy(content),
+                hex::encode(fields),
             );
         }
         Event::Delivered { packet_hash } => {

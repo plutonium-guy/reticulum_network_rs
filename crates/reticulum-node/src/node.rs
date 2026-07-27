@@ -123,6 +123,10 @@ impl<C: Clock> Node<C> {
         &self.clock
     }
 
+    pub fn identity(&self) -> &Identity {
+        &self.identity
+    }
+
     pub fn enable_transport(&mut self, enabled: bool) {
         self.transport_enabled = enabled;
     }
@@ -1303,6 +1307,10 @@ impl<C: Clock> Node<C> {
 
     pub fn knows_path(&self, dest_hash: &[u8; 16]) -> bool {
         self.paths.get(dest_hash).is_some()
+    }
+
+    pub fn path_public(&self, dest_hash: &[u8; 16]) -> Option<PublicIdentity> {
+        self.paths.get(dest_hash).map(|entry| entry.public.clone())
     }
 
     pub fn prune_paths(&mut self) -> usize {

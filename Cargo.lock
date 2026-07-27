@@ -953,6 +953,7 @@ dependencies = [
  "if-addrs",
  "reticulum-core",
  "reticulum-interface",
+ "reticulum-lxmf",
  "reticulum-node",
  "serialport",
  "socket2",
