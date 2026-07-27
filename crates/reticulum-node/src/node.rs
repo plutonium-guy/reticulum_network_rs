@@ -17,6 +17,7 @@ use reticulum_core::{
         LINKREQUEST, LRPROOF, LRRTT, PATH_RESPONSE, PLAIN, PROOF, Packet, RESOURCE, RESOURCE_ADV,
         RESOURCE_HMU, RESOURCE_ICL, RESOURCE_PRF, RESOURCE_RCL, RESOURCE_REQ, SINGLE, TRANSPORT,
     },
+    proof::{build_proof, proof_destination_hash, verify_proof},
     resource::ResourceAdvertisement,
     token,
 };
@@ -26,6 +27,7 @@ const PATHFINDER_MAX_HOPS: u8 = 128;
 const PACKET_HASH_TTL_SECS: u64 = 60;
 const LINK_KEEPALIVE_SECS: u64 = 360;
 const LINK_STALE_SECS: u64 = 720;
+const RECEIPT_TIMEOUT_SECS: u64 = 30;
 
 use crate::{
     Event, NodeError,
@@ -45,9 +47,15 @@ struct LocalDestination {
 
 #[derive(Debug)]
 enum LocalDestinationKind {
-    Single,
+    Single { prove: bool },
     Group { key: [u8; 64] },
     Plain,
+}
+
+#[derive(Debug)]
+struct PendingReceipt {
+    destination_public: PublicIdentity,
+    expires_at: u64,
 }
 
 pub struct Node<C: Clock = NoClock> {
@@ -64,6 +72,7 @@ pub struct Node<C: Clock = NoClock> {
     outbound: VecDeque<(u16, Vec<u8>)>,
     links: LinkRegistry,
     pending_events: VecDeque<Event>,
+    pending_receipts: BTreeMap<[u8; 32], PendingReceipt>,
     outbound_resources: BTreeMap<([u8; 16], [u8; 32]), OutboundResource>,
     inbound_resources: BTreeMap<([u8; 16], [u8; 32]), InboundResource>,
 }
@@ -90,6 +99,7 @@ impl<C: Clock> Node<C> {
             outbound: VecDeque::new(),
             links: LinkRegistry::default(),
             pending_events: VecDeque::new(),
+            pending_receipts: BTreeMap::new(),
             outbound_resources: BTreeMap::new(),
             inbound_resources: BTreeMap::new(),
         }
@@ -119,7 +129,7 @@ impl<C: Clock> Node<C> {
         self.locals.push(LocalDestination {
             name_hash,
             dest_hash,
-            kind: LocalDestinationKind::Single,
+            kind: LocalDestinationKind::Single { prove: false },
         });
         dest_hash
     }
@@ -178,7 +188,8 @@ impl<C: Clock> Node<C> {
         interface: u16,
     ) {
         let Some(local) = self.locals.iter().find(|local| {
-            &local.dest_hash == dest_hash && matches!(local.kind, LocalDestinationKind::Single)
+            &local.dest_hash == dest_hash
+                && matches!(local.kind, LocalDestinationKind::Single { .. })
         }) else {
             return;
         };
@@ -216,6 +227,27 @@ impl<C: Clock> Node<C> {
         plaintext: &[u8],
         rng: &mut R,
     ) -> Result<(), NodeError> {
+        self.send_single_message(dest_hash, plaintext, rng, false)
+            .map(|_| ())
+    }
+
+    pub fn send_message_with_receipt<R: EntropySource>(
+        &mut self,
+        dest_hash: &[u8; 16],
+        plaintext: &[u8],
+        rng: &mut R,
+    ) -> Result<[u8; 32], NodeError> {
+        self.send_single_message(dest_hash, plaintext, rng, true)?
+            .ok_or(NodeError::Unknown)
+    }
+
+    fn send_single_message<R: EntropySource>(
+        &mut self,
+        dest_hash: &[u8; 16],
+        plaintext: &[u8],
+        rng: &mut R,
+        create_receipt: bool,
+    ) -> Result<Option<[u8; 32]>, NodeError> {
         self.paths.prune(self.clock.now_secs());
         let (interface, next_hop_transport_id, hops, public) = self
             .paths
@@ -244,8 +276,39 @@ impl<C: Clock> Node<C> {
             packet.propagation = TRANSPORT;
             packet.transport_id = Some(next_hop_transport_id);
         }
+        let packet_hash = packet.full_packet_hash();
         self.outbound.push_back((interface, packet.encode()));
-        Ok(())
+        if create_receipt {
+            self.pending_receipts.insert(
+                packet_hash,
+                PendingReceipt {
+                    destination_public: public,
+                    expires_at: self.clock.now_secs().saturating_add(RECEIPT_TIMEOUT_SECS),
+                },
+            );
+            Ok(Some(packet_hash))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn set_prove(&mut self, dest_hash: &[u8; 16], enabled: bool) -> bool {
+        let Some(local) = self
+            .locals
+            .iter_mut()
+            .find(|local| &local.dest_hash == dest_hash)
+        else {
+            return false;
+        };
+        let LocalDestinationKind::Single { prove } = &mut local.kind else {
+            return false;
+        };
+        *prove = enabled;
+        true
+    }
+
+    pub fn pending_receipt_count(&self) -> usize {
+        self.pending_receipts.len()
     }
 
     pub fn send_group_message<R: EntropySource>(
@@ -429,6 +492,8 @@ impl<C: Clock> Node<C> {
 
     fn tick_inner(&mut self, mut rng: Option<&mut dyn EntropySource>) -> Vec<Event> {
         let now = self.clock.now_secs();
+        self.pending_receipts
+            .retain(|_, receipt| receipt.expires_at > now);
         let mut keepalives = Vec::new();
         let mut closed = Vec::new();
         for (id, link) in self.links.iter_mut() {
@@ -541,6 +606,9 @@ impl<C: Clock> Node<C> {
         if packet.packet_type == PROOF && packet.dest_type == LINK && packet.context == LRPROOF {
             return self.handle_link_proof(&packet, &dest_hash, rng);
         }
+        if packet.packet_type == PROOF && packet.dest_type == SINGLE {
+            return self.handle_delivery_proof(&packet, &dest_hash);
+        }
         if packet.packet_type == PROOF && packet.dest_type == LINK && packet.context == RESOURCE_PRF
         {
             return self.handle_resource_proof(&packet, &dest_hash);
@@ -568,7 +636,8 @@ impl<C: Clock> Node<C> {
             return Vec::new();
         }
         if !self.locals.iter().any(|local| {
-            &local.dest_hash == dest_hash && matches!(local.kind, LocalDestinationKind::Single)
+            &local.dest_hash == dest_hash
+                && matches!(local.kind, LocalDestinationKind::Single { .. })
         }) {
             return Vec::new();
         }
@@ -962,6 +1031,31 @@ impl<C: Clock> Node<C> {
         Vec::new()
     }
 
+    fn handle_delivery_proof(
+        &mut self,
+        packet: &Packet,
+        proof_destination: &[u8; 16],
+    ) -> Vec<Event> {
+        let Some(packet_hash) = packet
+            .data
+            .get(..32)
+            .and_then(|hash| <[u8; 32]>::try_from(hash).ok())
+        else {
+            return Vec::new();
+        };
+        if proof_destination_hash(&packet_hash) != *proof_destination {
+            return Vec::new();
+        }
+        let Some(receipt) = self.pending_receipts.get(&packet_hash) else {
+            return Vec::new();
+        };
+        if verify_proof(&receipt.destination_public, &packet.data) != Ok(packet_hash) {
+            return Vec::new();
+        }
+        self.pending_receipts.remove(&packet_hash);
+        alloc::vec![Event::Delivered { packet_hash }]
+    }
+
     fn enqueue_encrypted_link_context(
         &mut self,
         link_id: &[u8; 16],
@@ -1156,24 +1250,39 @@ impl<C: Clock> Node<C> {
         let Some(local) = local else {
             return Vec::new();
         };
-        let result = match (&local.kind, packet.dest_type) {
-            (LocalDestinationKind::Single, SINGLE) => token::decrypt(&self.identity, &packet.data),
-            (LocalDestinationKind::Group { key }, GROUP) => token::open_with_key(key, &packet.data),
-            (LocalDestinationKind::Plain, PLAIN) => Ok(packet.data.clone()),
+        let (result, prove) = match (&local.kind, packet.dest_type) {
+            (LocalDestinationKind::Single { prove }, SINGLE) => {
+                (token::decrypt(&self.identity, &packet.data), *prove)
+            }
+            (LocalDestinationKind::Group { key }, GROUP) => {
+                (token::open_with_key(key, &packet.data), false)
+            }
+            (LocalDestinationKind::Plain, PLAIN) => (Ok(packet.data.clone()), false),
             _ => return Vec::new(),
         };
         match result {
-            Ok(plaintext) => alloc::vec![Event::Message {
-                dest_hash: *dest_hash,
-                plaintext,
-            }],
+            Ok(plaintext) => {
+                if prove {
+                    let packet_hash = packet.full_packet_hash();
+                    let proof = build_proof(&self.identity, &packet_hash);
+                    self.outbound.push_back((
+                        interface,
+                        Packet::explicit_proof(&proof_destination_hash(&packet_hash), proof)
+                            .encode(),
+                    ));
+                }
+                alloc::vec![Event::Message {
+                    dest_hash: *dest_hash,
+                    plaintext,
+                }]
+            }
             Err(error) => alloc::vec![Event::Error(NodeError::Core(error))],
         }
     }
 
     pub fn local_destinations(&self) -> impl Iterator<Item = [u8; 16]> + '_ {
         self.locals.iter().filter_map(|local| {
-            matches!(local.kind, LocalDestinationKind::Single).then_some(local.dest_hash)
+            matches!(local.kind, LocalDestinationKind::Single { .. }).then_some(local.dest_hash)
         })
     }
 

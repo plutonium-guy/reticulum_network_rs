@@ -559,3 +559,66 @@ fn group_destination_rejects_ciphertext_from_wrong_key() {
             .all(|event| !matches!(event, Event::Message { .. }))
     );
 }
+
+#[test]
+fn single_destination_emits_and_validates_delivery_proof() {
+    let mut sender = Node::new(Identity::from_private_bytes(&[61u8; 32], &[62u8; 32]));
+    let mut receiver = Node::new(Identity::from_private_bytes(&[63u8; 32], &[64u8; 32]));
+    sender.register_interface(10);
+    receiver.register_interface(10);
+    let destination = receiver.register_single_destination("proof_test", &["messages"]);
+    assert!(receiver.set_prove(&destination, true));
+
+    let mut receiver_rng = SeededRng::new(101);
+    receiver.send_announce(&destination, b"", &mut receiver_rng, 10);
+    let (_, announce) = receiver.poll_outbound().unwrap();
+    sender.handle_inbound(&announce, 10);
+
+    let mut sender_rng = SeededRng::new(102);
+    let packet_hash = sender
+        .send_message_with_receipt(&destination, b"prove delivery", &mut sender_rng)
+        .unwrap();
+    assert_eq!(sender.pending_receipt_count(), 1);
+    let (_, message) = sender.poll_outbound().unwrap();
+    assert!(matches!(
+        receiver.handle_inbound(&message, 10).as_slice(),
+        [Event::Message { plaintext, .. }] if plaintext == b"prove delivery"
+    ));
+
+    let (_, proof) = receiver.poll_outbound().unwrap();
+    let proof_packet = Packet::decode(&proof).unwrap();
+    assert_eq!(proof_packet.dest_hash, packet_hash[..16]);
+    assert_eq!(proof_packet.data.len(), 96);
+    assert_eq!(
+        sender.handle_inbound(&proof, 10),
+        vec![Event::Delivered { packet_hash }]
+    );
+    assert_eq!(sender.pending_receipt_count(), 0);
+}
+
+#[test]
+fn proof_strategy_defaults_off_and_receipts_expire() {
+    let mut sender = Node::with_clock(
+        Identity::from_private_bytes(&[65u8; 32], &[66u8; 32]),
+        TestClock::new(100),
+    );
+    let mut receiver = Node::new(Identity::from_private_bytes(&[67u8; 32], &[68u8; 32]));
+    sender.register_interface(11);
+    receiver.register_interface(11);
+    let destination = receiver.register_single_destination("proof_test", &["off"]);
+    let mut rng = SeededRng::new(103);
+    receiver.send_announce(&destination, b"", &mut rng, 11);
+    let (_, announce) = receiver.poll_outbound().unwrap();
+    sender.handle_inbound(&announce, 11);
+
+    sender
+        .send_message_with_receipt(&destination, b"no proof", &mut rng)
+        .unwrap();
+    let (_, message) = sender.poll_outbound().unwrap();
+    receiver.handle_inbound(&message, 11);
+    assert!(receiver.poll_outbound().is_none());
+    assert_eq!(sender.pending_receipt_count(), 1);
+    sender.clock().advance(31);
+    sender.tick();
+    assert_eq!(sender.pending_receipt_count(), 0);
+}

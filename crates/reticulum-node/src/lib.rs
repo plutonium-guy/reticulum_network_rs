@@ -23,6 +23,9 @@ pub enum Event {
         dest_hash: [u8; 16],
         plaintext: Vec<u8>,
     },
+    Delivered {
+        packet_hash: [u8; 32],
+    },
     LinkEstablished {
         link_id: [u8; 16],
     },
