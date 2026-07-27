@@ -6,3 +6,7 @@ license.workspace = true
 
 [dependencies]
 reticulum-core = { path = "../reticulum-core" }
+
+[features]
+default = []
+compression = ["reticulum-core/compression"]

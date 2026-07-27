@@ -6,6 +6,7 @@ pub mod clock;
 pub mod link_state;
 pub mod node;
 pub mod path_table;
+pub mod resource_state;
 pub mod rng;
 
 pub use clock::{Clock, NoClock, TestClock};

@@ -7,7 +7,7 @@
 use alloc::vec::Vec;
 use rmp::{
     decode::{read_bin_len, read_int, read_map_len, read_str_len},
-    encode::{write_bin, write_map_len, write_nil, write_str, write_uint},
+    encode::{write_array_len, write_bin, write_map_len, write_nil, write_str, write_uint},
 };
 
 use crate::{CoreError, EntropySource, hash::full_hash};
@@ -106,6 +106,32 @@ pub fn hashmap(parts: &[Vec<u8>], random: &[u8; RANDOM_HASH_SIZE]) -> Vec<u8> {
         map.extend_from_slice(&map_hash(part, random));
     }
     map
+}
+
+pub fn pack_hashmap_update(resource_hash: &[u8; 32], segment: u32, map: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(32 + map.len() + 8);
+    out.extend_from_slice(resource_hash);
+    let _ = write_array_len(&mut out, 2);
+    let _ = write_uint(&mut out, u64::from(segment));
+    let _ = write_bin(&mut out, map);
+    out
+}
+
+pub fn unpack_hashmap_update(data: &[u8]) -> Result<([u8; 32], u32, Vec<u8>), CoreError> {
+    if data.len() < 32 {
+        return Err(CoreError::Truncated);
+    }
+    let hash = data[..32].try_into().map_err(|_| CoreError::Truncated)?;
+    let mut input = &data[32..];
+    if rmp::decode::read_array_len(&mut input).map_err(|_| CoreError::InvalidField)? != 2 {
+        return Err(CoreError::InvalidField);
+    }
+    let segment = to_u32(read_integer(&mut input)?)?;
+    let map = read_binary(&mut input)?;
+    if !input.is_empty() || map.is_empty() || !map.len().is_multiple_of(MAPHASH_LEN) {
+        return Err(CoreError::InvalidField);
+    }
+    Ok((hash, segment, map))
 }
 
 fn hash_joined(left: &[u8], right: &[u8]) -> [u8; 32] {
