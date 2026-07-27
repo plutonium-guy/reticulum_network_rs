@@ -1,0 +1,16 @@
+[package]
+name = "reticulum-embedded"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+autobins = false
+
+[dependencies]
+embassy-time = { version = "0.5", default-features = false, features = ["tick-hz-1_000_000"] }
+reticulum-core = { path = "../reticulum-core" }
+reticulum-interface = { path = "../reticulum-interface" }
+reticulum-node = { path = "../reticulum-node" }
+
+[features]
+default = []
+insecure-demo-rng = []
