@@ -1,5 +1,7 @@
+mod node_api;
 mod ws;
 
+pub use node_api::ReticulumNode;
 pub use ws::HdlcStreamDecoder;
 
 use reticulum_node::{clock::Clock, rng::EntropySource};
