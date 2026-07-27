@@ -27,4 +27,6 @@ pub enum CoreError {
     DecryptFailed,
     /// A field held a value outside its permitted range.
     InvalidField,
+    /// The input requires an optional capability that is not enabled.
+    Unsupported,
 }

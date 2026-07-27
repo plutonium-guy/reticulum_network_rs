@@ -16,6 +16,13 @@ pub const HEADER_2: u8 = 1;
 pub const BROADCAST: u8 = 0;
 pub const TRANSPORT: u8 = 1;
 pub const PATH_RESPONSE: u8 = 0x0B;
+pub const RESOURCE: u8 = 0x01;
+pub const RESOURCE_ADV: u8 = 0x02;
+pub const RESOURCE_REQ: u8 = 0x03;
+pub const RESOURCE_HMU: u8 = 0x04;
+pub const RESOURCE_PRF: u8 = 0x05;
+pub const RESOURCE_ICL: u8 = 0x06;
+pub const RESOURCE_RCL: u8 = 0x07;
 pub const KEEPALIVE: u8 = 0xFA;
 pub const LINKCLOSE: u8 = 0xFC;
 pub const LRRTT: u8 = 0xFE;
@@ -122,6 +129,10 @@ impl Packet {
 
     pub fn link_data_with_context(link_id: &[u8; 16], ciphertext: Vec<u8>, context: u8) -> Packet {
         Self::new_header1(LINK, DATA, link_id, context, ciphertext)
+    }
+
+    pub fn link_context(link_id: &[u8; 16], context: u8, payload: Vec<u8>) -> Packet {
+        Self::link_data_with_context(link_id, payload, context)
     }
 
     fn new_header1(

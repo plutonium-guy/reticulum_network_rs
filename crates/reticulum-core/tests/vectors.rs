@@ -211,6 +211,19 @@ fn link_packet_constructors_have_rns_shapes() {
 }
 
 #[test]
+fn resource_link_context_packet_roundtrips() {
+    use reticulum_core::packet::{DATA, LINK, RESOURCE_ADV};
+
+    let link_id = [0xA5; 16];
+    let packet = Packet::link_context(&link_id, RESOURCE_ADV, vec![1, 2, 3]);
+    assert_eq!(packet.packet_type, DATA);
+    assert_eq!(packet.dest_type, LINK);
+    assert_eq!(packet.context, RESOURCE_ADV);
+    assert_eq!(packet.dest_hash, link_id);
+    assert_eq!(Packet::decode(&packet.encode()).unwrap(), packet);
+}
+
+#[test]
 fn link_request_and_ephemeral_keys_match_rns_vector() {
     use reticulum_core::{
         EntropySource,
