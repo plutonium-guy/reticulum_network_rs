@@ -15,6 +15,52 @@ use crate::{CoreError, EntropySource, hash::full_hash};
 pub const MAPHASH_LEN: usize = 4;
 pub const RANDOM_HASH_SIZE: usize = 4;
 pub const MAX_EFFICIENT_SIZE: usize = 1024 * 1024 - 1;
+pub const MAX_DECOMPRESSED_SIZE: usize = 64 * 1024 * 1024;
+
+#[cfg(feature = "compression")]
+pub fn compress_if_useful(data: &[u8]) -> (Vec<u8>, bool) {
+    use bzip2::{Compression, write::BzEncoder};
+    use std::io::Write;
+
+    if data.len() > MAX_DECOMPRESSED_SIZE {
+        return (data.to_vec(), false);
+    }
+    let mut encoder = BzEncoder::new(Vec::new(), Compression::best());
+    if encoder.write_all(data).is_err() {
+        return (data.to_vec(), false);
+    }
+    match encoder.finish() {
+        Ok(compressed) if compressed.len() < data.len() => (compressed, true),
+        _ => (data.to_vec(), false),
+    }
+}
+
+#[cfg(not(feature = "compression"))]
+pub fn compress_if_useful(data: &[u8]) -> (Vec<u8>, bool) {
+    (data.to_vec(), false)
+}
+
+#[cfg(feature = "compression")]
+pub fn decompress_payload(data: &[u8]) -> Result<Vec<u8>, CoreError> {
+    use bzip2::read::BzDecoder;
+    use std::io::Read;
+
+    let decoder = BzDecoder::new(data);
+    let mut decoded = Vec::new();
+    decoder
+        .take((MAX_DECOMPRESSED_SIZE + 1) as u64)
+        .read_to_end(&mut decoded)
+        .map_err(|_| CoreError::DecryptFailed)?;
+    if decoded.len() > MAX_DECOMPRESSED_SIZE {
+        return Err(CoreError::InvalidField);
+    }
+    Ok(decoded)
+}
+
+#[cfg(not(feature = "compression"))]
+pub fn decompress_payload(_data: &[u8]) -> Result<Vec<u8>, CoreError> {
+    Err(CoreError::Unsupported)
+}
 
 pub fn split_parts(data: &[u8], sdu: usize) -> Vec<Vec<u8>> {
     if sdu == 0 {

@@ -1,6 +1,8 @@
 #![no_std]
 
 extern crate alloc;
+#[cfg(feature = "compression")]
+extern crate std;
 
 pub mod announce;
 pub mod destination;

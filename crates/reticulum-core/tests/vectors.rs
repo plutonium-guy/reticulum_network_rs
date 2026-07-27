@@ -312,6 +312,18 @@ fn resource_hashmap_and_proof_match_rns_vectors() {
     );
 }
 
+#[cfg(feature = "compression")]
+#[test]
+fn resource_compression_roundtrips_when_useful() {
+    use reticulum_core::resource::{compress_if_useful, decompress_payload};
+
+    let plaintext = vec![b'A'; 32 * 1024];
+    let (compressed, used) = compress_if_useful(&plaintext);
+    assert!(used);
+    assert!(compressed.len() < plaintext.len());
+    assert_eq!(decompress_payload(&compressed).unwrap(), plaintext);
+}
+
 #[test]
 fn link_request_and_ephemeral_keys_match_rns_vector() {
     use reticulum_core::{

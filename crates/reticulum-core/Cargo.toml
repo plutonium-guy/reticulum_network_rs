@@ -4,6 +4,10 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+compression = ["dep:bzip2"]
+
 [dependencies]
 sha2.workspace = true
 hmac.workspace = true
@@ -13,6 +17,7 @@ cbc = { workspace = true, features = ["alloc", "block-padding"] }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 x25519-dalek = { workspace = true, features = ["static_secrets"] }
 rmp.workspace = true
+bzip2 = { version = "0.6", optional = true }
 
 [dev-dependencies]
 serde.workspace = true
