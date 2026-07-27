@@ -8,12 +8,18 @@ pub const PROOF: u8 = 0x03;
 /// RNS destination type value for a single-identity destination.
 pub const SINGLE: u8 = 0x00;
 pub const PLAIN: u8 = 0x02;
+/// Measured from RNS 1.4.1 `Destination.LINK`.
+pub const LINK: u8 = 0x03;
 
 pub const HEADER_1: u8 = 0;
 pub const HEADER_2: u8 = 1;
 pub const BROADCAST: u8 = 0;
 pub const TRANSPORT: u8 = 1;
 pub const PATH_RESPONSE: u8 = 0x0B;
+pub const KEEPALIVE: u8 = 0xFA;
+pub const LINKCLOSE: u8 = 0xFC;
+pub const LRRTT: u8 = 0xFE;
+pub const LRPROOF: u8 = 0xFF;
 const ADDR_LEN: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,14 +108,56 @@ impl Packet {
         }
     }
 
-    /// RNS packet hash, excluding mutable hop and transport-routing fields.
-    pub fn packet_hash(&self) -> [u8; 16] {
+    pub fn link_request(dest_hash: &[u8; 16], payload: Vec<u8>) -> Packet {
+        Self::new_header1(SINGLE, LINKREQUEST, dest_hash, 0, payload)
+    }
+
+    pub fn proof(link_id: &[u8; 16], proof_data: Vec<u8>, context: u8) -> Packet {
+        Self::new_header1(LINK, PROOF, link_id, context, proof_data)
+    }
+
+    pub fn link_data(link_id: &[u8; 16], ciphertext: Vec<u8>) -> Packet {
+        Self::link_data_with_context(link_id, ciphertext, 0)
+    }
+
+    pub fn link_data_with_context(link_id: &[u8; 16], ciphertext: Vec<u8>, context: u8) -> Packet {
+        Self::new_header1(LINK, DATA, link_id, context, ciphertext)
+    }
+
+    fn new_header1(
+        dest_type: u8,
+        packet_type: u8,
+        dest_hash: &[u8; 16],
+        context: u8,
+        data: Vec<u8>,
+    ) -> Packet {
+        Packet {
+            ifac: false,
+            header_type: HEADER_1,
+            context_flag: false,
+            propagation: BROADCAST,
+            dest_type,
+            packet_type,
+            hops: 0,
+            transport_id: None,
+            dest_hash: dest_hash.to_vec(),
+            context,
+            data,
+        }
+    }
+
+    pub fn hashable_part(&self) -> Vec<u8> {
         let mut hashable = Vec::with_capacity(1 + self.dest_hash.len() + 1 + self.data.len());
         hashable.push(((self.dest_type & 0x3) << 2) | (self.packet_type & 0x3));
         hashable.extend_from_slice(&self.dest_hash);
         hashable.push(self.context);
         hashable.extend_from_slice(&self.data);
-        crate::hash::truncated_hash(&hashable)
+        hashable
+    }
+
+    /// RNS packet hash, excluding mutable hop and transport-routing fields.
+    pub fn packet_hash(&self) -> [u8; 16] {
+        crate::hash::truncated_hash(&self.hashable_part())
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Packet, CoreError> {

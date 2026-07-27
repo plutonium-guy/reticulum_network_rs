@@ -186,6 +186,31 @@ fn packet_data_single_shape() {
 }
 
 #[test]
+fn link_packet_constructors_have_rns_shapes() {
+    use reticulum_core::packet::{LINK, LINKREQUEST, LRPROOF, PROOF};
+
+    let destination = [7u8; 16];
+    let request = Packet::link_request(&destination, vec![1; 64]);
+    assert_eq!(request.packet_type, LINKREQUEST);
+    assert_eq!(request.dest_type, Packet::SINGLE);
+    assert_eq!(Packet::decode(&request.encode()).unwrap(), request);
+    assert_eq!(
+        request.packet_hash(),
+        truncated_hash(&request.hashable_part())
+    );
+
+    let link_id = request.packet_hash();
+    let proof = Packet::proof(&link_id, vec![2; 96], LRPROOF);
+    assert_eq!(proof.packet_type, PROOF);
+    assert_eq!(proof.dest_type, LINK);
+    assert_eq!(proof.context, LRPROOF);
+
+    let data = Packet::link_data(&link_id, vec![3; 64]);
+    assert_eq!(data.dest_type, LINK);
+    assert_eq!(Packet::decode(&data.encode()).unwrap(), data);
+}
+
+#[test]
 fn packet_decode_rejects_short_input() {
     assert!(Packet::decode(&[0x00]).is_err());
 }
