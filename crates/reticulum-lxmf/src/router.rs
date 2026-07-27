@@ -1,4 +1,4 @@
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, vec::Vec};
 
 use reticulum_core::{
     CoreError, EntropySource,
@@ -63,6 +63,34 @@ impl LxmfRouter {
 
     pub fn receive_direct(&self, bytes: &[u8]) -> Result<LxmfEvent, CoreError> {
         self.unpack_for_local_destination(bytes)
+    }
+
+    /// Send the LXMF payload opportunistically in one destination packet.
+    ///
+    /// LXMF omits the leading destination hash because the RNS packet already
+    /// carries it in its destination field.
+    pub fn send_opportunistic<C: Clock, R: EntropySource>(
+        &self,
+        node: &mut Node<C>,
+        message: &LxmfMessage,
+        entropy: &mut R,
+    ) -> Result<(), NodeError> {
+        let packed = message.pack();
+        node.send_message(&message.destination, &packed[16..], entropy)
+    }
+
+    pub fn receive_opportunistic(
+        &self,
+        destination: [u8; 16],
+        bytes: &[u8],
+    ) -> Result<LxmfEvent, CoreError> {
+        if destination != self.local_destination {
+            return Err(CoreError::InvalidField);
+        }
+        let mut packed = Vec::with_capacity(16 + bytes.len());
+        packed.extend_from_slice(&destination);
+        packed.extend_from_slice(bytes);
+        self.unpack_for_local_destination(&packed)
     }
 
     fn unpack_for_local_destination(&self, bytes: &[u8]) -> Result<LxmfEvent, CoreError> {
@@ -167,5 +195,61 @@ mod tests {
         assert_eq!(received.title, b"direct");
         assert_eq!(received.content, b"hello over link");
         assert_eq!(received.fields, fields);
+    }
+
+    #[test]
+    fn two_nodes_deliver_and_verify_opportunistic_lxmf() {
+        let source_identity = identity(11);
+        let recipient_identity = identity(13);
+        let mut source = Node::with_clock(identity(11), TestClock::new(10));
+        let mut recipient = Node::with_clock(identity(13), TestClock::new(10));
+        let source_destination =
+            source.register_single_destination(LXMF_APP_NAME, DELIVERY_ASPECTS);
+        let recipient_destination =
+            recipient.register_single_destination(LXMF_APP_NAME, DELIVERY_ASPECTS);
+        source.register_interface(8);
+        recipient.register_interface(8);
+        let mut source_entropy = SeededRng::new(30);
+        let mut recipient_entropy = SeededRng::new(40);
+
+        recipient.send_announce(&recipient_destination, b"", &mut recipient_entropy, 8);
+        source.handle_inbound_with_entropy(&drain_one(&mut recipient), 8, &mut source_entropy);
+
+        let source_router = LxmfRouter::new(&source_identity.public());
+        let mut recipient_router = LxmfRouter::new(&recipient_identity.public());
+        recipient_router.remember_source(source_identity.public());
+        let message = LxmfMessage::build(
+            &source_identity,
+            recipient_destination,
+            source_destination,
+            52.5,
+            b"opportunistic",
+            b"hello in one packet",
+            &[0x80],
+        );
+        source_router
+            .send_opportunistic(&mut source, &message, &mut source_entropy)
+            .unwrap();
+        let events = recipient.handle_inbound_with_entropy(
+            &drain_one(&mut source),
+            8,
+            &mut recipient_entropy,
+        );
+        let (destination, plaintext) = events
+            .into_iter()
+            .find_map(|event| match event {
+                Event::Message {
+                    dest_hash,
+                    plaintext,
+                } => Some((dest_hash, plaintext)),
+                _ => None,
+            })
+            .unwrap();
+        let LxmfEvent::Message(received) = recipient_router
+            .receive_opportunistic(destination, &plaintext)
+            .unwrap();
+        assert_eq!(received.title, b"opportunistic");
+        assert_eq!(received.content, b"hello in one packet");
+        assert_eq!(received.fields, [0x80]);
     }
 }
