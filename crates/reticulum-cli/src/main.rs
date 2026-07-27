@@ -2,12 +2,14 @@ mod config;
 
 use std::{error::Error, io, path::PathBuf, time::Duration};
 
-use config::{Config, save_or_create_identity};
+use config::{Config, IfacSettings, InterfaceConfig, save_or_create_identity};
 use reticulum_node::{Event, node::Node};
 use reticulum_tokio::{
     SystemClock,
     driver::{Driver, DriverHandle},
-    tcp::TcpClientInterface,
+    interface::{AsyncInterface, IfacConfig, with_ifac},
+    tcp::{TcpClientInterface, TcpServerInterface},
+    udp::UdpInterface,
 };
 use tokio::sync::mpsc;
 
@@ -68,15 +70,80 @@ async fn run() -> Result<(), Box<dyn Error>> {
         .group_key()?
         .map(|key| node.register_group_destination(&config.app_name, &aspect_refs, key));
 
-    let mut interfaces = Vec::new();
-    for (index, address) in config.peer_addresses().into_iter().enumerate() {
-        let interface_id = u16::try_from(index).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidInput, "too many TCP peer interfaces")
-        })?;
-        interfaces.push((interface_id, TcpClientInterface::connect(address).await?));
+    let mut interfaces: Vec<Box<dyn AsyncInterface>> = Vec::new();
+    let mut servers = Vec::new();
+    for interface in config.interface_configs() {
+        let ifac = build_ifac(interface.ifac())?;
+        match interface {
+            InterfaceConfig::TcpClient { address, .. } => {
+                let id = next_interface_id(interfaces.len())?;
+                let interface = TcpClientInterface::connect(&address).await?.with_id(id);
+                interfaces.push(wrap_ifac(Box::new(interface), ifac));
+            }
+            InterfaceConfig::TcpServer { listen, .. } => {
+                servers.push((TcpServerInterface::bind(&listen).await?, ifac));
+            }
+            InterfaceConfig::Udp {
+                listen, forward, ..
+            } => {
+                let id = next_interface_id(interfaces.len())?;
+                let interface = UdpInterface::bind(&listen, &forward).await?.with_id(id);
+                interfaces.push(wrap_ifac(Box::new(interface), ifac));
+            }
+            InterfaceConfig::Auto {
+                interface,
+                group_id,
+                discovery_port,
+                data_port,
+                ..
+            } => {
+                let id = next_interface_id(interfaces.len())?;
+                let interface = reticulum_tokio::auto::AutoInterface::new_with_ports(
+                    &group_id,
+                    discovery_port,
+                    data_port,
+                    &interface,
+                )
+                .await?
+                .with_id(id);
+                interfaces.push(wrap_ifac(Box::new(interface), ifac));
+            }
+            InterfaceConfig::Serial { port, baud, .. } => {
+                #[cfg(feature = "serial")]
+                {
+                    let id = next_interface_id(interfaces.len())?;
+                    let interface =
+                        reticulum_tokio::serial::SerialInterface::open(&port, baud)?.with_id(id);
+                    interfaces.push(wrap_ifac(Box::new(interface), ifac));
+                }
+                #[cfg(not(feature = "serial"))]
+                {
+                    let _ = (port, baud, ifac);
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "serial interface requires reticulum-cli feature \"serial\"",
+                    )
+                    .into());
+                }
+            }
+        }
     }
     let (events_tx, mut events_rx) = mpsc::channel(64);
-    let (driver, handle) = Driver::new_multi(node, interfaces, events_tx);
+    let (driver, handle) = if servers.is_empty() {
+        Driver::new_interfaces(node, interfaces, events_tx)
+    } else {
+        let (driver, handle, registrar) = Driver::new_dynamic(node, interfaces, events_tx);
+        for (server, ifac) in servers {
+            let registrar = registrar.clone();
+            tokio::spawn(async move {
+                if let Err(error) = server.serve_with_ifac(registrar, ifac).await {
+                    eprintln!("reticulumd: TCP server stopped: {error}");
+                }
+            });
+        }
+        drop(registrar);
+        (driver, handle)
+    };
     let driver_task = tokio::spawn(driver.run());
     handle
         .announce_all(config.app_data.as_bytes())
@@ -344,6 +411,33 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
     driver_task.await??;
     Ok(())
+}
+
+fn next_interface_id(index: usize) -> io::Result<u16> {
+    u16::try_from(index)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many interfaces"))
+}
+
+fn build_ifac(settings: Option<&IfacSettings>) -> io::Result<Option<IfacConfig>> {
+    settings
+        .map(|settings| {
+            let config = IfacConfig::new(&settings.network_name, &settings.passphrase);
+            match settings.size {
+                Some(size) => config.with_size(size),
+                None => Ok(config),
+            }
+        })
+        .transpose()
+}
+
+fn wrap_ifac(
+    interface: Box<dyn AsyncInterface>,
+    ifac: Option<IfacConfig>,
+) -> Box<dyn AsyncInterface> {
+    match ifac {
+        Some(ifac) => with_ifac(interface, ifac),
+        None => interface,
+    }
 }
 
 fn take_config_path(args: &mut Vec<String>) -> Result<Option<PathBuf>, Box<dyn Error>> {

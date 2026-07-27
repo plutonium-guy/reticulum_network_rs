@@ -215,6 +215,7 @@ pub struct Driver<C: Clock> {
     inbound: mpsc::Receiver<Inbound>,
     registrations: Option<mpsc::Receiver<Box<dyn AsyncInterface>>>,
     keep_alive: bool,
+    announce_data: Option<Vec<u8>>,
     entropy: OsEntropy,
     commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<Event>,
@@ -311,6 +312,7 @@ impl<C: Clock + Send + 'static> Driver<C> {
                 inbound: inbound_rx,
                 registrations: Some(registrations_rx),
                 keep_alive,
+                announce_data: None,
                 entropy: OsEntropy,
                 commands: commands_rx,
                 events,
@@ -331,6 +333,7 @@ impl<C: Clock + Send + 'static> Driver<C> {
                 command = self.commands.recv() => {
                     match command {
                         Some(Command::AnnounceAll(app_data)) => {
+                            self.announce_data = Some(app_data.clone());
                             let destinations: Vec<_> = self.node.local_destinations().collect();
                             let interfaces: Vec<_> = self.interfaces.keys().copied().collect();
                             for interface in interfaces {
@@ -427,12 +430,14 @@ impl<C: Clock + Send + 'static> Driver<C> {
                         }
                         Some(Inbound::Closed { interface }) => {
                             self.interfaces.remove(&interface);
+                            self.node.unregister_interface(interface);
                             if self.interfaces.is_empty() && !self.keep_alive {
                                 return Ok(());
                             }
                         }
                         Some(Inbound::Error { interface, error }) => {
                             self.interfaces.remove(&interface);
+                            self.node.unregister_interface(interface);
                             if self.interfaces.is_empty() && !self.keep_alive {
                                 return Err(error);
                             }
@@ -455,6 +460,19 @@ impl<C: Clock + Send + 'static> Driver<C> {
                                 self.inbound_sender.clone(),
                             );
                             self.interfaces.insert(id, sender);
+                            if let Some(app_data) = self.announce_data.clone() {
+                                let destinations: Vec<_> =
+                                    self.node.local_destinations().collect();
+                                for destination in destinations {
+                                    self.node.send_announce(
+                                        &destination,
+                                        &app_data,
+                                        &mut self.entropy,
+                                        id,
+                                    );
+                                }
+                                self.drain_outbound().await?;
+                            }
                         }
                         None => {
                             self.registrations = None;
@@ -607,6 +625,39 @@ mod tests {
         b_handle.shutdown().await.unwrap();
         a_task.await.unwrap().unwrap();
         b_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn dynamically_registered_interface_receives_cached_announce() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let connect = tokio::spawn(async move { TcpClientInterface::connect(&addr).await });
+        let (server_stream, _) = listener.accept().await.unwrap();
+        let mut peer = connect.await.unwrap().unwrap();
+
+        let mut node = Node::new(Identity::from_private_bytes(&[81u8; 32], &[82u8; 32]));
+        node.register_single_destination("dynamic", &["server"]);
+        let (events_tx, _events_rx) = mpsc::channel(16);
+        let (driver, handle, registrar) = Driver::new_dynamic(node, Vec::new(), events_tx);
+        let task = tokio::spawn(driver.run());
+
+        handle.announce_all(b"ready").await.unwrap();
+        let id = registrar.allocate_id().unwrap();
+        registrar
+            .register(Box::new(
+                TcpClientInterface::from_stream(server_stream).with_id(id),
+            ))
+            .await
+            .unwrap();
+        let announce = timeout(Duration::from_secs(2), peer.recv_packet())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(announce[0] & 0x03, 1);
+
+        handle.shutdown().await.unwrap();
+        task.await.unwrap().unwrap();
     }
 
     #[tokio::test]

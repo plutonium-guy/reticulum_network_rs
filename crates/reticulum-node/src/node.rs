@@ -133,6 +133,11 @@ impl<C: Clock> Node<C> {
         }
     }
 
+    pub fn unregister_interface(&mut self, interface: u16) {
+        self.interfaces
+            .retain(|registered| *registered != interface);
+    }
+
     pub fn register_single_destination(&mut self, app_name: &str, aspects: &[&str]) -> [u8; 16] {
         let name_hash = name_hash(app_name, aspects);
         let dest_hash = destination_hash(&name_hash, &self.identity.hash());

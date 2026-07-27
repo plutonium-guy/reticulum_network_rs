@@ -4,6 +4,10 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+serial = ["reticulum-tokio/serial"]
+
 [[bin]]
 name = "reticulumd"
 path = "src/main.rs"
