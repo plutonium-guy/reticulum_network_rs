@@ -1,0 +1,20 @@
+[package]
+name = "reticulum-ffi"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+reticulum-core = { path = "../reticulum-core" }
+reticulum-node = { path = "../reticulum-node" }
+reticulum-tokio = { path = "../reticulum-tokio" }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+uniffi = { version = "0.32", features = ["cli"] }
