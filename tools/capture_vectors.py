@@ -89,6 +89,7 @@ PATH_REQUEST_ONLY = "--path-request-only" in sys.argv
 KEYED_TOKEN_ONLY = "--keyed-token-only" in sys.argv
 LINK_ONLY = "--link-only" in sys.argv
 RESOURCE_ONLY = "--resource-only" in sys.argv
+DESTTYPES_ONLY = "--desttypes-only" in sys.argv
 LINK_VECTOR_NAMES = {
     "linkrequest.json",
     "link_handshake.json",
@@ -99,6 +100,11 @@ RESOURCE_VECTOR_NAMES = {
     "resource_advertisement.json",
     "resource_maphash.json",
     "resource_proof.json",
+}
+DESTTYPES_VECTOR_NAMES = {
+    "group_destination.json",
+    "proof.json",
+    "proof_destination.json",
 }
 
 
@@ -114,6 +120,8 @@ def w(name, obj):
     if LINK_ONLY and name not in LINK_VECTOR_NAMES:
         return
     if RESOURCE_ONLY and name not in RESOURCE_VECTOR_NAMES:
+        return
+    if DESTTYPES_ONLY and name not in DESTTYPES_VECTOR_NAMES:
         return
     with open(os.path.join(OUT, name), "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
@@ -162,6 +170,89 @@ w(
         "identity_hash": hx(idty.hash),
         "name_hash": hx(dest.name_hash),  # 10 bytes
         "dest_hash": hx(dest.hash),  # 16 bytes
+    },
+)
+
+# --- GROUP destination and keyed Token ---
+# RNS 1.4.1 requires a non-PLAIN destination to hold an Identity. GROUP
+# encryption uses a separate symmetric Token key, while address derivation
+# still includes the Identity hash.
+group_app_name, group_aspects = "example_group", ["messaging", "shared"]
+group_key = seed("group/signing") + seed("group/encryption")
+group_dest = RNS.Destination(
+    idty,
+    RNS.Destination.OUT,
+    RNS.Destination.GROUP,
+    group_app_name,
+    *group_aspects,
+)
+group_dest.load_private_key(group_key)
+group_plaintext = b"deterministic group message"
+group_iv = seed("group/iv")[:16]
+real_urandom = os.urandom
+try:
+    os.urandom = lambda length: group_iv if length == 16 else real_urandom(length)
+    group_ciphertext = group_dest.encrypt(group_plaintext)
+finally:
+    os.urandom = real_urandom
+
+w(
+    "group_destination.json",
+    {
+        "app_name": group_app_name,
+        "aspects": group_aspects,
+        "identity_hash": hx(idty.hash),
+        "name_hash": hx(group_dest.name_hash),
+        "name_only_dest_hash": hx(
+            RNS.Destination.hash(None, group_app_name, *group_aspects)
+        ),
+        "dest_hash": hx(group_dest.hash),
+        "group_key": hx(group_key),
+        "iv": hx(group_iv),
+        "plaintext": hx(group_plaintext),
+        "ciphertext": hx(group_ciphertext),
+    },
+)
+
+# --- explicit packet proof + ProofDestination ---
+# RNS uses the full SHA-256 packet hash in explicit proofs (32 bytes) and
+# truncates only the ProofDestination routing address to 16 bytes.
+proof_plain_dest = RNS.Destination(
+    None,
+    RNS.Destination.OUT,
+    RNS.Destination.PLAIN,
+    "example_proof",
+    "message",
+)
+proof_packet = RNS.Packet(proof_plain_dest, b"prove this packet", RNS.Packet.DATA)
+proof_packet.pack()
+proved_hash = proof_packet.get_hash()
+proof_data = proved_hash + idty.sign(proved_hash)
+proof_destination = proof_packet.generate_proof_destination()
+proof_wire_packet = RNS.Packet(
+    proof_destination,
+    proof_data,
+    RNS.Packet.PROOF,
+)
+proof_wire_packet.pack()
+
+w(
+    "proof.json",
+    {
+        "dest_prv_x": hx(idty.prv_bytes),
+        "dest_prv_ed": hx(idty.sig_prv_bytes),
+        "dest_pub": hx(pub),
+        "proved_packet": hx(proof_packet.raw),
+        "packet_hash": hx(proved_hash),
+        "proof_data": hx(proof_data),
+        "proof_packet": hx(proof_wire_packet.raw),
+    },
+)
+w(
+    "proof_destination.json",
+    {
+        "packet_hash": hx(proved_hash),
+        "proof_destination_hash": hx(proof_destination.hash),
     },
 )
 

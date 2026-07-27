@@ -1,0 +1,15 @@
+{
+  "app_name": "example_group",
+  "aspects": [
+    "messaging",
+    "shared"
+  ],
+  "ciphertext": "4046037eba0297a7d28c47f6417285d4f27537c1020b71e242618b505200356c61c852b88e95984ca073fd60629e6e94191cf3550830bca6b9990dd7a8f2ce1c7ed134feb88ff71ee25ab67494dde07d",
+  "dest_hash": "b58bde6226ce2cae6fe0a682109f3f54",
+  "group_key": "b60060c35d028c77d00cdaefeb84690e43365b28b1a21dd34f5571dbad9e26661aaf19eef717f13cad47b2c2ce3f6780bb011ba38981365c64f601671b5220d7",
+  "identity_hash": "bdf703fb7f1e2f4cbbfcf38472961d28",
+  "iv": "4046037eba0297a7d28c47f6417285d4",
+  "name_hash": "bbd9afde84516018f72a",
+  "name_only_dest_hash": "c5e26db48c944f956b31d6509fca2fec",
+  "plaintext": "64657465726d696e69737469632067726f7570206d657373616765"
+}

@@ -7,6 +7,7 @@ pub const LINKREQUEST: u8 = 0x02;
 pub const PROOF: u8 = 0x03;
 /// RNS destination type value for a single-identity destination.
 pub const SINGLE: u8 = 0x00;
+pub const GROUP: u8 = 0x01;
 pub const PLAIN: u8 = 0x02;
 /// Measured from RNS 1.4.1 `Destination.LINK`.
 pub const LINK: u8 = 0x03;
@@ -65,19 +66,19 @@ impl Packet {
     }
 
     pub fn data_single(dest_hash: &[u8; 16], ciphertext: Vec<u8>) -> Packet {
-        Packet {
-            ifac: false,
-            header_type: HEADER_1,
-            context_flag: false,
-            propagation: 0,
-            dest_type: Self::SINGLE,
-            packet_type: DATA,
-            hops: 0,
-            transport_id: None,
-            dest_hash: dest_hash.to_vec(),
-            context: 0,
-            data: ciphertext,
-        }
+        Self::data_for(SINGLE, dest_hash, ciphertext)
+    }
+
+    pub fn data_for(dest_type: u8, dest_hash: &[u8; 16], data: Vec<u8>) -> Packet {
+        Self::new_header1(dest_type, DATA, dest_hash, 0, data)
+    }
+
+    pub fn explicit_proof(dest_hash: &[u8; 16], proof_data: Vec<u8>) -> Packet {
+        Self::new_header1(SINGLE, PROOF, dest_hash, 0, proof_data)
+    }
+
+    pub fn full_packet_hash(&self) -> [u8; 32] {
+        crate::hash::full_hash(&self.hashable_part())
     }
 
     pub fn path_request_destination_hash() -> [u8; 16] {
@@ -168,7 +169,10 @@ impl Packet {
 
     /// RNS packet hash, excluding mutable hop and transport-routing fields.
     pub fn packet_hash(&self) -> [u8; 16] {
-        crate::hash::truncated_hash(&self.hashable_part())
+        let full = self.full_packet_hash();
+        let mut truncated = [0u8; 16];
+        truncated.copy_from_slice(&full[..16]);
+        truncated
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Packet, CoreError> {

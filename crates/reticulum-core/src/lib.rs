@@ -10,6 +10,7 @@ pub mod hash;
 pub mod identity;
 pub mod link;
 pub mod packet;
+pub mod proof;
 pub mod resource;
 pub mod token;
 

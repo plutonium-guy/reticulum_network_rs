@@ -21,3 +21,20 @@ pub fn destination_hash(name_hash: &[u8; 10], identity_hash: &[u8; 16]) -> [u8; 
     buf[10..].copy_from_slice(identity_hash);
     truncated_hash(&buf)
 }
+
+/// Address produced by `RNS.Destination.hash(None, ...)`.
+///
+/// Real RNS GROUP destinations are identity-bound; use
+/// [`group_destination_hash_with_identity`] for an interoperable GROUP.
+pub fn group_destination_hash(app_name: &str, aspects: &[&str]) -> [u8; 16] {
+    truncated_hash(&name_hash(app_name, aspects))
+}
+
+/// Address of an RNS GROUP destination holding the supplied Identity.
+pub fn group_destination_hash_with_identity(
+    app_name: &str,
+    aspects: &[&str],
+    identity_hash: &[u8; 16],
+) -> [u8; 16] {
+    destination_hash(&name_hash(app_name, aspects), identity_hash)
+}

@@ -39,7 +39,9 @@ fn public_identity_verifies_own_signature() {
     assert!(id.public().verify(b"tampered", &sig).is_err());
 }
 
-use reticulum_core::destination::{destination_hash, name_hash};
+use reticulum_core::destination::{
+    destination_hash, group_destination_hash, group_destination_hash_with_identity, name_hash,
+};
 
 #[test]
 fn destination_hashes_match_rns() {
@@ -59,6 +61,67 @@ fn destination_hashes_match_rns() {
     let ih: [u8; 16] = hexf(&v, "identity_hash").try_into().unwrap();
     let dh = destination_hash(&nh, &ih);
     assert_eq!(dh.to_vec(), hexf(&v, "dest_hash"));
+}
+
+#[test]
+fn group_destination_and_ciphertext_match_rns() {
+    let vector = load("group_destination.json");
+    let app = vector["app_name"].as_str().unwrap();
+    let aspects: Vec<_> = vector["aspects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|aspect| aspect.as_str().unwrap())
+        .collect();
+    let identity_hash: [u8; 16] = hexf(&vector, "identity_hash").try_into().unwrap();
+    assert_eq!(
+        group_destination_hash(app, &aspects).to_vec(),
+        hexf(&vector, "name_only_dest_hash")
+    );
+    assert_eq!(
+        group_destination_hash_with_identity(app, &aspects, &identity_hash).to_vec(),
+        hexf(&vector, "dest_hash")
+    );
+
+    let key: [u8; 64] = hexf(&vector, "group_key").try_into().unwrap();
+    let iv: [u8; 16] = hexf(&vector, "iv").try_into().unwrap();
+    let plaintext = hexf(&vector, "plaintext");
+    let ciphertext = hexf(&vector, "ciphertext");
+    assert_eq!(token::seal_with_key(&key, &plaintext, &iv), ciphertext);
+    assert_eq!(token::open_with_key(&key, &ciphertext).unwrap(), plaintext);
+}
+
+#[test]
+fn explicit_proof_and_destination_match_rns() {
+    use reticulum_core::{
+        identity::PublicIdentity,
+        proof::{build_proof, proof_destination_hash, verify_proof},
+    };
+
+    let vector = load("proof.json");
+    let x: [u8; 32] = hexf(&vector, "dest_prv_x").try_into().unwrap();
+    let ed: [u8; 32] = hexf(&vector, "dest_prv_ed").try_into().unwrap();
+    let identity = Identity::from_private_bytes(&x, &ed);
+    let public = PublicIdentity::from_bytes(&hexf(&vector, "dest_pub")).unwrap();
+    let packet_hash: [u8; 32] = hexf(&vector, "packet_hash").try_into().unwrap();
+    let proof = hexf(&vector, "proof_data");
+    assert_eq!(build_proof(&identity, &packet_hash), proof);
+    assert_eq!(verify_proof(&public, &proof).unwrap(), packet_hash);
+
+    let proof_destination = load("proof_destination.json");
+    assert_eq!(
+        proof_destination_hash(&packet_hash).to_vec(),
+        hexf(&proof_destination, "proof_destination_hash")
+    );
+    let packet = Packet::explicit_proof(&proof_destination_hash(&packet_hash), proof.clone());
+    assert_eq!(packet.encode(), hexf(&vector, "proof_packet"));
+
+    let mut tampered = proof;
+    tampered[40] ^= 1;
+    assert_eq!(
+        verify_proof(&public, &tampered),
+        Err(reticulum_core::CoreError::BadSignature)
+    );
 }
 
 use reticulum_core::token;
