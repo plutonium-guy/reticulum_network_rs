@@ -1,3 +1,4 @@
+pub mod auto;
 pub mod driver;
 pub mod interface;
 pub mod tcp;
