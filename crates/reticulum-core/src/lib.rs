@@ -6,8 +6,14 @@ pub mod announce;
 pub mod destination;
 pub mod hash;
 pub mod identity;
+pub mod link;
 pub mod packet;
 pub mod token;
+
+/// Randomness injected into sans-I/O protocol code.
+pub trait EntropySource {
+    fn fill(&mut self, out: &mut [u8]);
+}
 
 /// Errors returned by fallible core operations. No core function panics on
 /// untrusted input; malformed data always surfaces as one of these.

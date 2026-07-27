@@ -87,6 +87,13 @@ RATCHET_ONLY = "--ratchet-only" in sys.argv
 TRANSPORT_ONLY = "--transport-only" in sys.argv
 PATH_REQUEST_ONLY = "--path-request-only" in sys.argv
 KEYED_TOKEN_ONLY = "--keyed-token-only" in sys.argv
+LINK_ONLY = "--link-only" in sys.argv
+LINK_VECTOR_NAMES = {
+    "linkrequest.json",
+    "link_handshake.json",
+    "link_proof.json",
+    "link_data.json",
+}
 
 
 def w(name, obj):
@@ -97,6 +104,8 @@ def w(name, obj):
     if PATH_REQUEST_ONLY and name != "path_request.json":
         return
     if KEYED_TOKEN_ONLY and name != "token_keyed.json":
+        return
+    if LINK_ONLY and name not in LINK_VECTOR_NAMES:
         return
     with open(os.path.join(OUT, name), "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
@@ -226,6 +235,111 @@ w(
         "iv": hx(link_iv),
         "plaintext": hx(link_plaintext),
         "token": hx(link_token),
+    },
+)
+
+# --- Link request, handshake, proof and encrypted DATA ---
+initiator_link_x_prv = seed("link/initiator/x25519")
+initiator_link_ed_prv = seed("link/initiator/ed25519")
+responder_link_x_prv = seed("link/responder/x25519")
+initiator_link_x_key = RNS.Cryptography.X25519PrivateKey.from_private_bytes(
+    initiator_link_x_prv
+)
+initiator_link_ed_key = RNS.Cryptography.Ed25519PrivateKey.from_private_bytes(
+    initiator_link_ed_prv
+)
+responder_link_x_key = RNS.Cryptography.X25519PrivateKey.from_private_bytes(
+    responder_link_x_prv
+)
+initiator_link_x_pub = initiator_link_x_key.public_key().public_bytes()
+initiator_link_ed_pub = initiator_link_ed_key.public_key().public_bytes()
+responder_link_x_pub = responder_link_x_key.public_key().public_bytes()
+link_request_payload = initiator_link_x_pub + initiator_link_ed_pub
+link_request_packet = RNS.Packet(
+    dest, link_request_payload, packet_type=RNS.Packet.LINKREQUEST
+)
+link_request_packet.pack()
+link_id = RNS.Link.link_id_from_lr_packet(link_request_packet)
+
+w(
+    "linkrequest.json",
+    {
+        "x25519_prv": hx(initiator_link_x_prv),
+        "x25519_pub": hx(initiator_link_x_pub),
+        "ed25519_prv": hx(initiator_link_ed_prv),
+        "ed25519_pub": hx(initiator_link_ed_pub),
+        "dest_hash": hx(dest.hash),
+        "lr_packet_bytes": hx(link_request_packet.raw),
+        "link_id": hx(link_id),
+    },
+)
+
+shared_key = initiator_link_x_key.exchange(
+    RNS.Cryptography.X25519PublicKey.from_public_bytes(responder_link_x_pub)
+)
+link_derived_key = RNS.Cryptography.hkdf(
+    length=64, derive_from=shared_key, salt=link_id, context=None
+)
+w(
+    "link_handshake.json",
+    {
+        "own_x25519_prv": hx(initiator_link_x_prv),
+        "peer_x25519_pub": hx(responder_link_x_pub),
+        "link_id": hx(link_id),
+        "derived_key": hx(link_derived_key),
+    },
+)
+
+proof_signed_data = link_id + responder_link_x_pub + idty.sig_pub_bytes
+proof_signature = idty.sign(proof_signed_data)
+proof_data = proof_signature + responder_link_x_pub
+w(
+    "link_proof.json",
+    {
+        "dest_identity_prv_x": hx(idty.prv_bytes),
+        "dest_identity_prv_ed": hx(idty.sig_prv_bytes),
+        "dest_pub": hx(idty.get_public_key()),
+        "link_id": hx(link_id),
+        "responder_x25519_pub": hx(responder_link_x_pub),
+        "proof_data": hx(proof_data),
+    },
+)
+
+
+class _VectorLink:
+    type = RNS.Destination.LINK
+    status = RNS.Link.ACTIVE
+    mtu = RNS.Reticulum.MTU
+
+    def __init__(self, vector_link_id, vector_key):
+        self.hash = vector_link_id
+        self.link_id = vector_link_id
+        self.vector_key = vector_key
+
+    def encrypt(self, plaintext):
+        return Token(self.vector_key).encrypt(plaintext)
+
+
+link_plaintext = b"encrypted link data"
+link_iv = seed("link/data/iv")[:16]
+vector_link = _VectorLink(link_id, link_derived_key)
+real_urandom = os.urandom
+try:
+    os.urandom = lambda length: link_iv if length == 16 else real_urandom(length)
+    link_data_packet = RNS.Packet(vector_link, link_plaintext, RNS.Packet.DATA)
+    link_data_packet.pack()
+finally:
+    os.urandom = real_urandom
+
+w(
+    "link_data.json",
+    {
+        "derived_key": hx(link_derived_key),
+        "iv": hx(link_iv),
+        "link_id": hx(link_id),
+        "plaintext": hx(link_plaintext),
+        "packet_bytes": hx(link_data_packet.raw),
+        "dest_type": RNS.Destination.LINK,
     },
 )
 

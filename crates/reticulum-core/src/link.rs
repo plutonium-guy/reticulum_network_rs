@@ -1,0 +1,66 @@
+use crate::{CoreError, EntropySource, hash::truncated_hash, packet::Packet};
+use alloc::vec::Vec;
+use ed25519_dalek::SigningKey;
+use x25519_dalek::{PublicKey as XPublic, StaticSecret};
+
+pub const LINK_PUBLIC_KEY_LEN: usize = 32;
+pub const LINK_REQUEST_LEN: usize = 64;
+pub const LINK_SIGNALLING_LEN: usize = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkEphemeral {
+    pub x25519_prv: [u8; LINK_PUBLIC_KEY_LEN],
+    pub x25519_pub: [u8; LINK_PUBLIC_KEY_LEN],
+    pub ed25519_prv: [u8; LINK_PUBLIC_KEY_LEN],
+    pub ed25519_pub: [u8; LINK_PUBLIC_KEY_LEN],
+}
+
+impl LinkEphemeral {
+    pub fn generate<R: EntropySource>(rng: &mut R) -> Self {
+        let mut x25519_prv = [0u8; LINK_PUBLIC_KEY_LEN];
+        let mut ed25519_prv = [0u8; LINK_PUBLIC_KEY_LEN];
+        rng.fill(&mut x25519_prv);
+        rng.fill(&mut ed25519_prv);
+        Self::from_private_bytes(x25519_prv, ed25519_prv)
+    }
+
+    pub fn from_private_bytes(
+        x25519_prv: [u8; LINK_PUBLIC_KEY_LEN],
+        ed25519_prv: [u8; LINK_PUBLIC_KEY_LEN],
+    ) -> Self {
+        let x25519_secret = StaticSecret::from(x25519_prv);
+        let ed25519_signing = SigningKey::from_bytes(&ed25519_prv);
+        Self {
+            x25519_prv,
+            x25519_pub: XPublic::from(&x25519_secret).to_bytes(),
+            ed25519_prv,
+            ed25519_pub: ed25519_signing.verifying_key().to_bytes(),
+        }
+    }
+}
+
+pub fn link_request_payload(ephemeral: &LinkEphemeral) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(LINK_REQUEST_LEN);
+    payload.extend_from_slice(&ephemeral.x25519_pub);
+    payload.extend_from_slice(&ephemeral.ed25519_pub);
+    payload
+}
+
+/// Parses the 64-byte key payload and accepts RNS 1.4.1's optional 3-byte
+/// MTU/mode signalling suffix for live interoperability.
+pub fn parse_link_request(data: &[u8]) -> Result<([u8; 32], [u8; 32]), CoreError> {
+    if data.len() != LINK_REQUEST_LEN && data.len() != LINK_REQUEST_LEN + LINK_SIGNALLING_LEN {
+        return Err(CoreError::InvalidField);
+    }
+    let x25519_pub = data[..32].try_into().map_err(|_| CoreError::Truncated)?;
+    let ed25519_pub = data[32..64].try_into().map_err(|_| CoreError::Truncated)?;
+    Ok((x25519_pub, ed25519_pub))
+}
+
+pub fn link_id_from_request(packet: &Packet) -> [u8; 16] {
+    let mut hashable = packet.hashable_part();
+    if packet.data.len() > LINK_REQUEST_LEN {
+        hashable.truncate(hashable.len() - (packet.data.len() - LINK_REQUEST_LEN));
+    }
+    truncated_hash(&hashable)
+}

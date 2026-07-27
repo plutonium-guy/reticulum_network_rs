@@ -211,6 +211,48 @@ fn link_packet_constructors_have_rns_shapes() {
 }
 
 #[test]
+fn link_request_and_ephemeral_keys_match_rns_vector() {
+    use reticulum_core::{
+        EntropySource,
+        link::{LinkEphemeral, link_id_from_request, link_request_payload, parse_link_request},
+    };
+
+    struct VectorEntropy {
+        bytes: Vec<u8>,
+        offset: usize,
+    }
+    impl EntropySource for VectorEntropy {
+        fn fill(&mut self, out: &mut [u8]) {
+            let end = self.offset + out.len();
+            out.copy_from_slice(&self.bytes[self.offset..end]);
+            self.offset = end;
+        }
+    }
+
+    let vector = load("linkrequest.json");
+    let mut entropy = VectorEntropy {
+        bytes: [hexf(&vector, "x25519_prv"), hexf(&vector, "ed25519_prv")].concat(),
+        offset: 0,
+    };
+    let ephemeral = LinkEphemeral::generate(&mut entropy);
+    assert_eq!(ephemeral.x25519_pub.to_vec(), hexf(&vector, "x25519_pub"));
+    assert_eq!(ephemeral.ed25519_pub.to_vec(), hexf(&vector, "ed25519_pub"));
+
+    let payload = link_request_payload(&ephemeral);
+    let (x25519_pub, ed25519_pub) = parse_link_request(&payload).unwrap();
+    assert_eq!(x25519_pub, ephemeral.x25519_pub);
+    assert_eq!(ed25519_pub, ephemeral.ed25519_pub);
+
+    let raw = hexf(&vector, "lr_packet_bytes");
+    let packet = Packet::decode(&raw).unwrap();
+    assert_eq!(packet.data, payload);
+    assert_eq!(
+        link_id_from_request(&packet).to_vec(),
+        hexf(&vector, "link_id")
+    );
+}
+
+#[test]
 fn packet_decode_rejects_short_input() {
     assert!(Packet::decode(&[0x00]).is_err());
 }

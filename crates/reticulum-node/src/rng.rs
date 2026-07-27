@@ -1,9 +1,4 @@
-/// Source of randomness injected into the sans-I/O node.
-///
-/// Production implementations must use a cryptographically secure source.
-pub trait EntropySource {
-    fn fill(&mut self, out: &mut [u8]);
-}
+pub use reticulum_core::EntropySource;
 
 /// Deterministic SplitMix64 generator for tests and development only.
 ///
