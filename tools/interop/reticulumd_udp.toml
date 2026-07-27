@@ -1,0 +1,10 @@
+identity_path = "reticulum-rust-udp.identity"
+app_name = "reticulum_rust"
+aspects = ["message"]
+app_data = "rust UDP node"
+announce_interval_secs = 2
+
+[[interface]]
+type = "udp"
+listen = "127.0.0.1:42530"
+forward = "127.0.0.1:42531"

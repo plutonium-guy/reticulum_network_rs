@@ -1,0 +1,10 @@
+identity_path = "reticulum-rust-ifac.identity"
+app_name = "reticulum_rust"
+aspects = ["message"]
+app_data = "rust IFAC node"
+announce_interval_secs = 2
+
+[[interface]]
+type = "tcp_server"
+listen = "127.0.0.1:42540"
+ifac = { network_name = "reticulum-rust-ifac", passphrase = "correct horse battery staple" }

@@ -1,0 +1,16 @@
+[reticulum]
+  enable_transport = No
+  share_instance = No
+
+[logging]
+  loglevel = 3
+
+[interfaces]
+
+  [[Rust IFAC Server]]
+    type = TCPClientInterface
+    enabled = Yes
+    target_host = 127.0.0.1
+    target_port = 42540
+    network_name = reticulum-rust-ifac
+    passphrase = correct horse battery staple

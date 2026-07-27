@@ -421,6 +421,12 @@ fn next_interface_id(index: usize) -> io::Result<u16> {
 fn build_ifac(settings: Option<&IfacSettings>) -> io::Result<Option<IfacConfig>> {
     settings
         .map(|settings| {
+            if settings.network_name.is_empty() && settings.passphrase.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "IFAC requires a network name, a passphrase, or both",
+                ));
+            }
             let config = IfacConfig::new(&settings.network_name, &settings.passphrase);
             match settings.size {
                 Some(size) => config.with_size(size),

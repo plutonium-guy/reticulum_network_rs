@@ -43,12 +43,18 @@ impl AutoInterface {
         data_port: u16,
         iface_name: &str,
     ) -> io::Result<Self> {
+        let reverse_discovery_port = discovery_port.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "AutoInterface discovery port must be below 65535",
+            )
+        })?;
         let (local_ip, interface_index) = link_local_interface(iface_name)?;
         let multicast_addr = multicast_address(group_id.as_bytes());
         let discovery = multicast_socket(multicast_addr, discovery_port, interface_index)?;
         let reverse_discovery = UdpSocket::bind(SocketAddrV6::new(
             local_ip,
-            discovery_port + 1,
+            reverse_discovery_port,
             0,
             interface_index,
         ))

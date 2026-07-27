@@ -1,0 +1,9 @@
+identity_path = "reticulum-rust-tcp-server.identity"
+app_name = "reticulum_rust"
+aspects = ["message"]
+app_data = "rust TCP server"
+announce_interval_secs = 2
+
+[[interface]]
+type = "tcp_server"
+listen = "127.0.0.1:42520"

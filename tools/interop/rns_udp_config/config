@@ -1,0 +1,16 @@
+[reticulum]
+  enable_transport = No
+  share_instance = No
+
+[logging]
+  loglevel = 3
+
+[interfaces]
+
+  [[Rust UDP Peer]]
+    type = UDPInterface
+    enabled = Yes
+    listen_ip = 127.0.0.1
+    listen_port = 42531
+    forward_ip = 127.0.0.1
+    forward_port = 42530

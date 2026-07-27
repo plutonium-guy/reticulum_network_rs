@@ -122,3 +122,23 @@ The gate independently checks the GROUP and PLAIN destination derivations,
 requires exact received plaintext in both directions, configures explicit
 proofs, and waits for both Python `PacketReceipt` delivery and Rust
 `Delivered` confirmation.
+
+## Milestone 6 Interfaces
+
+Run `./tools/interop/run_interfaces_interop.sh` for bidirectional Python RNS
+1.4.1 gates over a Rust-owned TCP server, raw UDP, and IFAC-protected TCP. The
+gate also verifies that a mismatched IFAC passphrase cannot learn a path or
+deliver a packet.
+
+AutoInterface needs two LAN hosts because both implementations bind the fixed
+link-local data port (42671); the one-host gate prints an explicit skip.
+
+Verified on 2026-07-27:
+
+```text
+PASS tcp-server Rust <-> Python
+PASS udp Rust <-> Python
+PASS ifac Rust <-> Python
+PASS IFAC mismatched passphrase rejected
+SKIP AutoInterface live gate: one-host RNS/Rust peers cannot both bind the same link-local data port; use two LAN hosts
+```
