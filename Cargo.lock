@@ -473,8 +473,12 @@ dependencies = [
 name = "reticulum-interface"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
  "hex",
+ "hkdf",
+ "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

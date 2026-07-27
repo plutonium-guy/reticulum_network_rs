@@ -108,10 +108,23 @@ impl TcpServerInterface {
     }
 
     pub async fn serve(self, registrar: crate::driver::InterfaceRegistrar) -> std::io::Result<()> {
+        self.serve_with_ifac(registrar, None).await
+    }
+
+    pub async fn serve_with_ifac(
+        self,
+        registrar: crate::driver::InterfaceRegistrar,
+        ifac: Option<crate::interface::IfacConfig>,
+    ) -> std::io::Result<()> {
         loop {
             let id = registrar.allocate_id()?;
             let interface = self.accept(id).await?;
-            registrar.register(Box::new(interface)).await?;
+            let interface: Box<dyn crate::interface::AsyncInterface> = Box::new(interface);
+            let interface = match ifac.clone() {
+                Some(config) => crate::interface::with_ifac(interface, config),
+                None => interface,
+            };
+            registrar.register(interface).await?;
         }
     }
 }

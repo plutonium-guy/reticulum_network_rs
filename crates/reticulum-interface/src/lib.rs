@@ -3,6 +3,7 @@
 extern crate alloc;
 
 pub mod hdlc;
+pub mod ifac;
 pub mod kiss;
 
 /// Framing supplied by a physical interface.

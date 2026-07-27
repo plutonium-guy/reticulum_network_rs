@@ -90,6 +90,7 @@ KEYED_TOKEN_ONLY = "--keyed-token-only" in sys.argv
 LINK_ONLY = "--link-only" in sys.argv
 RESOURCE_ONLY = "--resource-only" in sys.argv
 DESTTYPES_ONLY = "--desttypes-only" in sys.argv
+IFAC_ONLY = "--ifac-only" in sys.argv
 LINK_VECTOR_NAMES = {
     "linkrequest.json",
     "link_handshake.json",
@@ -122,6 +123,8 @@ def w(name, obj):
     if RESOURCE_ONLY and name not in RESOURCE_VECTOR_NAMES:
         return
     if DESTTYPES_ONLY and name not in DESTTYPES_VECTOR_NAMES:
+        return
+    if IFAC_ONLY and name != "ifac_frame.json":
         return
     with open(os.path.join(OUT, name), "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
@@ -253,6 +256,50 @@ w(
     {
         "packet_hash": hx(proved_hash),
         "proof_destination_hash": hx(proof_destination.hash),
+    },
+)
+
+# --- interface access code ---
+ifac_network_name = "reticulum-rust-ifac"
+ifac_passphrase = "correct horse battery staple"
+ifac_size = 16
+ifac_origin = (
+    RNS.Identity.full_hash(ifac_network_name.encode("utf-8"))
+    + RNS.Identity.full_hash(ifac_passphrase.encode("utf-8"))
+)
+ifac_key = RNS.Cryptography.hkdf(
+    length=64,
+    derive_from=RNS.Identity.full_hash(ifac_origin),
+    salt=RNS.Reticulum.IFAC_SALT,
+    context=None,
+)
+ifac_identity = RNS.Identity.from_bytes(ifac_key)
+ifac_plain = proof_packet.raw
+ifac = ifac_identity.sign(ifac_plain)[-ifac_size:]
+ifac_mask = RNS.Cryptography.hkdf(
+    length=len(ifac_plain) + ifac_size,
+    derive_from=ifac,
+    salt=ifac_key,
+    context=None,
+)
+ifac_wire = bytes([ifac_plain[0] | 0x80, ifac_plain[1]]) + ifac + ifac_plain[2:]
+ifac_wire = bytes(
+    (byte ^ ifac_mask[index] | 0x80)
+    if index == 0
+    else (byte ^ ifac_mask[index])
+    if index == 1 or index > ifac_size + 1
+    else byte
+    for index, byte in enumerate(ifac_wire)
+)
+w(
+    "ifac_frame.json",
+    {
+        "network_name": ifac_network_name,
+        "passphrase": ifac_passphrase,
+        "ifac_size": ifac_size,
+        "ifac_key": hx(ifac_key),
+        "plain_frame": hx(ifac_plain),
+        "ifac_frame": hx(ifac_wire),
     },
 )
 

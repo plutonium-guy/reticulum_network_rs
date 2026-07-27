@@ -1,0 +1,8 @@
+{
+  "ifac_frame": "bb3c6d77e6cfd510a436c8d8a47b4b73740c3861065372b9bb2c12a808b7381059801d8c6db413dcbcc6661179062d21a8434f00",
+  "ifac_key": "cf57fbbd608f562e0471e535b78801522b84bf490c6c135da9ae8d6296e820cec45dd2324b878220a6177f47e93348912c31a4b3ec17646b9d2337aaba322695",
+  "ifac_size": 16,
+  "network_name": "reticulum-rust-ifac",
+  "passphrase": "correct horse battery staple",
+  "plain_frame": "0800150c288abf6fcafa5b9989a6cc95313b0070726f76652074686973207061636b6574"
+}
