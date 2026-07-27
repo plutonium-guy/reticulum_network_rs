@@ -45,11 +45,21 @@ struct LocalDestination {
     kind: LocalDestinationKind,
 }
 
-#[derive(Debug)]
 enum LocalDestinationKind {
     Single { prove: bool },
     Group { key: [u8; 64] },
     Plain,
+}
+
+impl core::fmt::Debug for LocalDestinationKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Never expose the shared GROUP key via Debug (leak-safety, mirrors Identity/LinkEphemeral).
+        match self {
+            Self::Single { prove } => f.debug_struct("Single").field("prove", prove).finish(),
+            Self::Group { .. } => f.debug_struct("Group").field("key", &"<redacted>").finish(),
+            Self::Plain => f.write_str("Plain"),
+        }
+    }
 }
 
 #[derive(Debug)]
