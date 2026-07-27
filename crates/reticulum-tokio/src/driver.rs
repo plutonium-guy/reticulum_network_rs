@@ -661,6 +661,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_interfaces_announce_receive_and_route_independently() {
+        async fn tcp_pair() -> (TcpClientInterface, TcpClientInterface) {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            let connect = tokio::spawn(async move { TcpClientInterface::connect(&addr).await });
+            let (stream, _) = listener.accept().await.unwrap();
+            (
+                TcpClientInterface::from_stream(stream),
+                connect.await.unwrap().unwrap(),
+            )
+        }
+
+        let (interface_one, mut peer_one) = tcp_pair().await;
+        let (interface_two, mut peer_two) = tcp_pair().await;
+        let mut node = Node::new(Identity::from_private_bytes(&[91u8; 32], &[92u8; 32]));
+        node.register_single_destination("multi", &["local"]);
+        let (events_tx, mut events_rx) = mpsc::channel(16);
+        let (driver, handle) = Driver::new_multi(
+            node,
+            vec![(1, interface_one), (2, interface_two)],
+            events_tx,
+        );
+        let task = tokio::spawn(driver.run());
+
+        handle.announce_all(b"both").await.unwrap();
+        assert!(peer_one.recv_packet().await.unwrap().is_some());
+        assert!(peer_two.recv_packet().await.unwrap().is_some());
+
+        let mut remote = Node::new(Identity::from_private_bytes(&[93u8; 32], &[94u8; 32]));
+        let remote_dest = remote.register_single_destination("multi", &["remote"]);
+        let mut rng = reticulum_node::rng::SeededRng::new(1);
+        remote.send_announce(&remote_dest, b"route-one", &mut rng, 0);
+        let (_, announce) = remote.poll_outbound().unwrap();
+        peer_one.send_packet(&announce).await.unwrap();
+        let learned = timeout(Duration::from_secs(2), events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(learned, Event::Announce { dest_hash, .. } if dest_hash == remote_dest));
+
+        handle
+            .send(remote_dest, b"only interface one")
+            .await
+            .unwrap();
+        assert!(peer_one.recv_packet().await.unwrap().is_some());
+        assert!(
+            timeout(Duration::from_millis(100), peer_two.recv_packet())
+                .await
+                .is_err()
+        );
+
+        handle.shutdown().await.unwrap();
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
     async fn drivers_establish_link_and_exchange_data() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
