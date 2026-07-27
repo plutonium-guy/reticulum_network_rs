@@ -297,6 +297,30 @@ fn link_proof_build_and_verify_match_rns_vector() {
 }
 
 #[test]
+fn link_data_packet_matches_rns_vector() {
+    use reticulum_core::{
+        packet::{DATA, LINK},
+        token::{open_with_key, seal_with_key},
+    };
+
+    let vector = load("link_data.json");
+    let raw = hexf(&vector, "packet_bytes");
+    let link_id: [u8; 16] = hexf(&vector, "link_id").try_into().unwrap();
+    let key: [u8; 64] = hexf(&vector, "derived_key").try_into().unwrap();
+    let iv: [u8; 16] = hexf(&vector, "iv").try_into().unwrap();
+    let plaintext = hexf(&vector, "plaintext");
+
+    let packet = Packet::decode(&raw).unwrap();
+    assert_eq!(packet.dest_type, LINK);
+    assert_eq!(packet.packet_type, DATA);
+    assert_eq!(packet.dest_hash, link_id);
+    assert_eq!(open_with_key(&key, &packet.data).unwrap(), plaintext);
+
+    let rebuilt = Packet::link_data(&link_id, seal_with_key(&key, &plaintext, &iv));
+    assert_eq!(rebuilt.encode(), raw);
+}
+
+#[test]
 fn packet_decode_rejects_short_input() {
     assert!(Packet::decode(&[0x00]).is_err());
 }
