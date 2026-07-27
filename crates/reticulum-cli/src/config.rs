@@ -21,6 +21,7 @@ pub struct Config {
     pub aspects: Vec<String>,
     pub app_data: String,
     pub announce_interval_secs: u64,
+    pub link_echo: bool,
 }
 
 impl Default for Config {
@@ -34,6 +35,7 @@ impl Default for Config {
             aspects: vec!["message".to_owned()],
             app_data: String::new(),
             announce_interval_secs: 30,
+            link_echo: false,
         }
     }
 }
@@ -96,6 +98,11 @@ impl Config {
             && let Ok(seconds) = value.parse()
         {
             self.announce_interval_secs = seconds;
+        }
+        if let Ok(value) = std::env::var("RETICULUM_LINK_ECHO")
+            && let Ok(enabled) = value.parse()
+        {
+            self.link_echo = enabled;
         }
     }
 

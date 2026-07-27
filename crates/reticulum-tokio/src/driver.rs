@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use reticulum_node::{Event, NodeError, clock::Clock, node::Node};
-use tokio::sync::mpsc;
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::{Duration, MissedTickBehavior},
+};
 
 use crate::{OsEntropy, tcp::TcpClientInterface};
 
@@ -15,11 +18,26 @@ enum Command {
         dest_hash: [u8; 16],
         plaintext: Vec<u8>,
     },
+    EstablishLink {
+        dest_hash: [u8; 16],
+        reply: oneshot::Sender<Result<[u8; 16], NodeError>>,
+    },
+    LinkSend {
+        link_id: [u8; 16],
+        plaintext: Vec<u8>,
+    },
+    CloseLink([u8; 16]),
     Shutdown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DriverClosed;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DriverError {
+    Closed,
+    Node(NodeError),
+}
 
 #[derive(Clone)]
 pub struct DriverHandle {
@@ -40,6 +58,35 @@ impl DriverHandle {
                 dest_hash,
                 plaintext: plaintext.to_vec(),
             })
+            .await
+            .map_err(|_| DriverClosed)
+    }
+
+    pub async fn establish_link(&self, dest_hash: [u8; 16]) -> Result<[u8; 16], DriverError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::EstablishLink { dest_hash, reply })
+            .await
+            .map_err(|_| DriverError::Closed)?;
+        response
+            .await
+            .map_err(|_| DriverError::Closed)?
+            .map_err(DriverError::Node)
+    }
+
+    pub async fn link_send(&self, link_id: [u8; 16], plaintext: &[u8]) -> Result<(), DriverClosed> {
+        self.commands
+            .send(Command::LinkSend {
+                link_id,
+                plaintext: plaintext.to_vec(),
+            })
+            .await
+            .map_err(|_| DriverClosed)
+    }
+
+    pub async fn close_link(&self, link_id: [u8; 16]) -> Result<(), DriverClosed> {
+        self.commands
+            .send(Command::CloseLink(link_id))
             .await
             .map_err(|_| DriverClosed)
     }
@@ -119,6 +166,9 @@ impl<C: Clock + Send + 'static> Driver<C> {
     }
 
     pub async fn run(mut self) -> std::io::Result<()> {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        tick.tick().await;
         loop {
             tokio::select! {
                 command = self.commands.recv() => {
@@ -146,13 +196,37 @@ impl<C: Clock + Send + 'static> Driver<C> {
                             }
                             self.drain_outbound().await?;
                         }
+                        Some(Command::EstablishLink { dest_hash, reply }) => {
+                            let result = self.node.establish_link(&dest_hash, &mut self.entropy);
+                            let _ = reply.send(result);
+                            self.drain_outbound().await?;
+                        }
+                        Some(Command::LinkSend { link_id, plaintext }) => {
+                            if let Err(error) =
+                                self.node.link_send(&link_id, &plaintext, &mut self.entropy)
+                            {
+                                self.emit(Event::Error(error)).await;
+                            }
+                            self.drain_outbound().await?;
+                        }
+                        Some(Command::CloseLink(link_id)) => {
+                            self.node.close_link(&link_id);
+                            for event in self.node.tick() {
+                                self.emit(event).await;
+                            }
+                            self.drain_outbound().await?;
+                        }
                         Some(Command::Shutdown) | None => return Ok(()),
                     }
                 }
                 inbound = self.inbound.recv() => {
                     match inbound {
                         Some(Inbound::Packet { interface, bytes }) => {
-                            for event in self.node.handle_inbound(&bytes, interface) {
+                            for event in self.node.handle_inbound_with_entropy(
+                                &bytes,
+                                interface,
+                                &mut self.entropy,
+                            ) {
                                 self.emit(event).await;
                             }
                             self.drain_outbound().await?;
@@ -172,6 +246,12 @@ impl<C: Clock + Send + 'static> Driver<C> {
                         }
                         None => return Ok(()),
                     }
+                }
+                _ = tick.tick() => {
+                    for event in self.node.tick() {
+                        self.emit(event).await;
+                    }
+                    self.drain_outbound().await?;
                 }
             }
         }
@@ -287,6 +367,74 @@ mod tests {
             .unwrap();
         assert!(matches!(message, Event::Message { plaintext, .. } if plaintext == b"over tcp"));
 
+        a_handle.shutdown().await.unwrap();
+        b_handle.shutdown().await.unwrap();
+        a_task.await.unwrap().unwrap();
+        b_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn drivers_establish_link_and_exchange_data() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let connect = tokio::spawn(async move { TcpClientInterface::connect(&addr).await });
+        let (server_stream, _) = listener.accept().await.unwrap();
+        let client_interface = connect.await.unwrap().unwrap();
+        let server_interface = TcpClientInterface::from_stream(server_stream);
+
+        let mut a_node = Node::new(Identity::from_private_bytes(&[11u8; 32], &[12u8; 32]));
+        a_node.register_single_destination("chat", &["link-a"]);
+        let mut b_node = Node::new(Identity::from_private_bytes(&[13u8; 32], &[14u8; 32]));
+        let b_dest = b_node.register_single_destination("chat", &["link-b"]);
+        let (a_events_tx, mut a_events_rx) = mpsc::channel(16);
+        let (b_events_tx, mut b_events_rx) = mpsc::channel(16);
+        let (a_driver, a_handle) = Driver::new(a_node, client_interface, a_events_tx);
+        let (b_driver, b_handle) = Driver::new(b_node, server_interface, b_events_tx);
+        let a_task = tokio::spawn(a_driver.run());
+        let b_task = tokio::spawn(b_driver.run());
+
+        b_handle.announce_all(b"").await.unwrap();
+        let announce = timeout(Duration::from_secs(2), a_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(announce, Event::Announce { dest_hash, .. } if dest_hash == b_dest));
+
+        let link_id = a_handle.establish_link(b_dest).await.unwrap();
+        let b_established = timeout(Duration::from_secs(2), b_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(b_established, Event::LinkEstablished { link_id: id } if id == link_id));
+        let a_established = timeout(Duration::from_secs(2), a_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(a_established, Event::LinkEstablished { link_id: id } if id == link_id));
+
+        a_handle.link_send(link_id, b"link over tcp").await.unwrap();
+        let data = timeout(Duration::from_secs(2), b_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            data,
+            Event::LinkData { link_id: id, plaintext }
+                if id == link_id && plaintext == b"link over tcp"
+        ));
+
+        b_handle.link_send(link_id, b"link reply").await.unwrap();
+        let reply = timeout(Duration::from_secs(2), a_events_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            reply,
+            Event::LinkData { link_id: id, plaintext }
+                if id == link_id && plaintext == b"link reply"
+        ));
+
+        a_handle.close_link(link_id).await.unwrap();
         a_handle.shutdown().await.unwrap();
         b_handle.shutdown().await.unwrap();
         a_task.await.unwrap().unwrap();

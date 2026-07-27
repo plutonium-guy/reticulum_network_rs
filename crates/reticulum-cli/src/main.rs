@@ -18,6 +18,10 @@ enum Mode {
         dest_hash: [u8; 16],
         plaintext: Vec<u8>,
     },
+    Link {
+        dest_hash: [u8; 16],
+        plaintext: Option<Vec<u8>>,
+    },
 }
 
 #[tokio::main]
@@ -72,6 +76,16 @@ async fn run() -> Result<(), Box<dyn Error>> {
                             break;
                         };
                         print_event(&event);
+                        if config.link_echo
+                            && let Event::LinkData { link_id, plaintext } = event
+                        {
+                            handle.link_send(link_id, &plaintext).await.map_err(|_| {
+                                io::Error::new(
+                                    io::ErrorKind::BrokenPipe,
+                                    "driver stopped before link echo",
+                                )
+                            })?;
+                        }
                     }
                     _ = announce_interval.tick() => {
                         handle
@@ -112,6 +126,60 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
+        Mode::Link {
+            dest_hash,
+            plaintext,
+        } => {
+            let mut link_id = None;
+            while let Some(event) = events_rx.recv().await {
+                print_event(&event);
+                match event {
+                    Event::Announce {
+                        dest_hash: announced,
+                        ..
+                    } if announced == dest_hash && link_id.is_none() => {
+                        let established =
+                            handle.establish_link(dest_hash).await.map_err(|error| {
+                                io::Error::other(format!("could not establish link: {error:?}"))
+                            })?;
+                        println!("link requested {}", hex::encode(established));
+                        link_id = Some(established);
+                    }
+                    Event::LinkEstablished {
+                        link_id: established,
+                    } if Some(established) == link_id => {
+                        if let Some(plaintext) = plaintext.as_deref() {
+                            handle
+                                .link_send(established, plaintext)
+                                .await
+                                .map_err(|_| {
+                                    io::Error::new(
+                                        io::ErrorKind::BrokenPipe,
+                                        "driver stopped before link send",
+                                    )
+                                })?;
+                            println!("sent link data {}", hex::encode(established));
+                        } else {
+                            shutdown(&handle).await?;
+                            break;
+                        }
+                    }
+                    Event::LinkData {
+                        link_id: received, ..
+                    } if Some(received) == link_id && plaintext.is_some() => {
+                        handle.close_link(received).await.map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::BrokenPipe,
+                                "driver stopped before link close",
+                            )
+                        })?;
+                        shutdown(&handle).await?;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     driver_task.await??;
@@ -135,17 +203,33 @@ fn parse_mode(args: &[String]) -> Result<Mode, Box<dyn Error>> {
         Some("run") if args.len() == 1 => Ok(Mode::Run),
         Some("announce") if args.len() == 1 => Ok(Mode::Announce),
         Some("send") if args.len() == 3 => {
-            let bytes = hex::decode(&args[1])?;
-            let dest_hash: [u8; 16] = bytes
-                .try_into()
-                .map_err(|_| "destination hash must be exactly 16 bytes")?;
+            let dest_hash = parse_hash(&args[1], "destination")?;
             Ok(Mode::Send {
                 dest_hash,
                 plaintext: args[2].as_bytes().to_vec(),
             })
         }
-        _ => Err("usage: reticulumd <run|announce|send DEST_HASH TEXT> [--config PATH]".into()),
+        Some("link") if args.len() == 2 => Ok(Mode::Link {
+            dest_hash: parse_hash(&args[1], "destination")?,
+            plaintext: None,
+        }),
+        Some("link-send") if args.len() == 3 => Ok(Mode::Link {
+            // A one-shot CLI has no persisted active-link registry, so this
+            // command establishes toward the destination before sending.
+            dest_hash: parse_hash(&args[1], "destination")?,
+            plaintext: Some(args[2].as_bytes().to_vec()),
+        }),
+        _ => Err(
+            "usage: reticulumd <run|announce|send DEST_HASH TEXT|link DEST_HASH|link-send DEST_HASH TEXT> [--config PATH]"
+                .into(),
+        ),
     }
+}
+
+fn parse_hash(value: &str, label: &str) -> Result<[u8; 16], Box<dyn Error>> {
+    hex::decode(value)?
+        .try_into()
+        .map_err(|_| format!("{label} hash must be exactly 16 bytes").into())
 }
 
 async fn shutdown(handle: &DriverHandle) -> io::Result<()> {
