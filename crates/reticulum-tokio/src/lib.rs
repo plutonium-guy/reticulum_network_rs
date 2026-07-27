@@ -1,6 +1,8 @@
 pub mod auto;
 pub mod driver;
 pub mod interface;
+#[cfg(feature = "serial")]
+pub mod serial;
 pub mod tcp;
 pub mod udp;
 

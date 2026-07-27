@@ -3,6 +3,7 @@
 extern crate alloc;
 
 pub mod hdlc;
+pub mod kiss;
 
 /// Framing supplied by a physical interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

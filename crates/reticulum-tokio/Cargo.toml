@@ -4,6 +4,10 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+serial = ["dep:serialport"]
+
 [dependencies]
 reticulum-core = { path = "../reticulum-core", features = ["compression"] }
 reticulum-node = { path = "../reticulum-node", features = ["compression"] }
@@ -13,6 +17,7 @@ getrandom = "0.2"
 async-trait = "0.1"
 if-addrs = "0.14"
 socket2 = { version = "0.6", features = ["all"] }
+serialport = { version = "4", optional = true, default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
