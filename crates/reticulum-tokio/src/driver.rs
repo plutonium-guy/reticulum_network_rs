@@ -6,7 +6,7 @@ use tokio::{
     time::{Duration, MissedTickBehavior},
 };
 
-use crate::{OsEntropy, tcp::TcpClientInterface};
+use crate::{OsEntropy, interface::AsyncInterface, tcp::TcpClientInterface};
 
 const INTERFACE_ID: u16 = 0;
 const COMMAND_CAPACITY: usize = 32;
@@ -218,14 +218,27 @@ impl<C: Clock + Send + 'static> Driver<C> {
     }
 
     pub fn new_multi(
-        mut node: Node<C>,
+        node: Node<C>,
         interfaces: Vec<(u16, TcpClientInterface)>,
+        events: mpsc::Sender<Event>,
+    ) -> (Self, DriverHandle) {
+        let interfaces = interfaces
+            .into_iter()
+            .map(|(id, interface)| Box::new(interface.with_id(id)) as Box<dyn AsyncInterface>)
+            .collect();
+        Self::new_interfaces(node, interfaces, events)
+    }
+
+    pub fn new_interfaces(
+        mut node: Node<C>,
+        interfaces: Vec<Box<dyn AsyncInterface>>,
         events: mpsc::Sender<Event>,
     ) -> (Self, DriverHandle) {
         let (commands_tx, commands_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (inbound_tx, inbound_rx) = mpsc::channel(INTERFACE_CAPACITY);
         let mut interface_senders = BTreeMap::new();
-        for (id, interface) in interfaces {
+        for interface in interfaces {
+            let id = interface.id();
             node.register_interface(id);
             let (outbound_tx, outbound_rx) = mpsc::channel(INTERFACE_CAPACITY);
             interface_senders.insert(id, outbound_tx);
@@ -401,7 +414,7 @@ impl<C: Clock + Send + 'static> Driver<C> {
 
 async fn run_interface(
     id: u16,
-    mut interface: TcpClientInterface,
+    mut interface: Box<dyn AsyncInterface>,
     mut outbound: mpsc::Receiver<Vec<u8>>,
     inbound: mpsc::Sender<Inbound>,
 ) {

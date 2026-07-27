@@ -1,4 +1,8 @@
-use reticulum_interface::hdlc::{FLAG, deframe, frame};
+use async_trait::async_trait;
+use reticulum_interface::{
+    Framing, Interface,
+    hdlc::{FLAG, deframe, frame},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -9,6 +13,7 @@ const MAX_BUFFER: usize = 512 * 1024;
 
 /// TCP client carrying raw RNS packets in the HDLC framing used by RNS 1.4.1.
 pub struct TcpClientInterface {
+    id: u16,
     stream: TcpStream,
     read_buffer: Vec<u8>,
 }
@@ -22,9 +27,15 @@ impl TcpClientInterface {
 
     pub fn from_stream(stream: TcpStream) -> Self {
         Self {
+            id: 0,
             stream,
             read_buffer: Vec::new(),
         }
+    }
+
+    pub fn with_id(mut self, id: u16) -> Self {
+        self.id = id;
+        self
     }
 
     pub async fn send_packet(&mut self, raw: &[u8]) -> std::io::Result<()> {
@@ -71,6 +82,26 @@ impl TcpClientInterface {
                 return Some(packet);
             }
         }
+    }
+}
+
+impl Interface for TcpClientInterface {
+    const FRAMING: Framing = Framing::Hdlc;
+    const HW_MTU: usize = 262_144;
+}
+
+#[async_trait]
+impl crate::interface::AsyncInterface for TcpClientInterface {
+    fn id(&self) -> u16 {
+        self.id
+    }
+
+    async fn recv_packet(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+        Self::recv_packet(self).await
+    }
+
+    async fn send_packet(&mut self, raw: &[u8]) -> std::io::Result<()> {
+        Self::send_packet(self, raw).await
     }
 }
 

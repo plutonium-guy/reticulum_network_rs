@@ -1,4 +1,5 @@
 pub mod driver;
+pub mod interface;
 pub mod tcp;
 
 use reticulum_node::clock::Clock;
