@@ -11,7 +11,12 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
 
+[[bin]]
+name = "ffi-interop"
+path = "src/bin/ffi-interop.rs"
+
 [dependencies]
+hex.workspace = true
 reticulum-core = { path = "../reticulum-core" }
 reticulum-node = { path = "../reticulum-node" }
 reticulum-tokio = { path = "../reticulum-tokio" }

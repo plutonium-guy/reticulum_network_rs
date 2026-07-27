@@ -149,3 +149,9 @@ Run `./tools/interop/run_wasm_interop.sh` to build the web package and launch a
 headless Chrome node through the binary WebSocket-to-TCP bridge. The browser
 node and Python RNS 1.4.1 node must each receive the other's encrypted
 message. `tools/wasm/index.html` is also a manual browser demo.
+
+## Milestone 7 mobile FFI
+
+Run `./tools/interop/run_ffi_interop.sh`. The harness calls the UniFFI-exported
+`ReticulumClient` surface and must exchange encrypted messages in both
+directions with Python RNS 1.4.1 over the TCP interface.
