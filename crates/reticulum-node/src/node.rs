@@ -4,16 +4,18 @@ use alloc::{
 };
 use reticulum_core::{
     announce::Announce,
-    destination::{destination_hash, name_hash},
+    destination::{
+        destination_hash, group_destination_hash, group_destination_hash_with_identity, name_hash,
+    },
     identity::{Identity, PublicIdentity},
     link::{
         LinkEphemeral, build_link_proof, derive_link_key, link_id_from_request,
         link_request_payload, parse_link_request, verify_link_proof,
     },
     packet::{
-        ANNOUNCE, BROADCAST, DATA, HEADER_1, HEADER_2, KEEPALIVE, LINK, LINKCLOSE, LINKREQUEST,
-        LRPROOF, LRRTT, PATH_RESPONSE, PLAIN, PROOF, Packet, RESOURCE, RESOURCE_ADV, RESOURCE_HMU,
-        RESOURCE_ICL, RESOURCE_PRF, RESOURCE_RCL, RESOURCE_REQ, TRANSPORT,
+        ANNOUNCE, BROADCAST, DATA, GROUP, HEADER_1, HEADER_2, KEEPALIVE, LINK, LINKCLOSE,
+        LINKREQUEST, LRPROOF, LRRTT, PATH_RESPONSE, PLAIN, PROOF, Packet, RESOURCE, RESOURCE_ADV,
+        RESOURCE_HMU, RESOURCE_ICL, RESOURCE_PRF, RESOURCE_RCL, RESOURCE_REQ, SINGLE, TRANSPORT,
     },
     resource::ResourceAdvertisement,
     token,
@@ -38,6 +40,14 @@ use crate::{
 struct LocalDestination {
     name_hash: [u8; 10],
     dest_hash: [u8; 16],
+    kind: LocalDestinationKind,
+}
+
+#[derive(Debug)]
+enum LocalDestinationKind {
+    Single,
+    Group { key: [u8; 64] },
+    Plain,
 }
 
 pub struct Node<C: Clock = NoClock> {
@@ -109,6 +119,53 @@ impl<C: Clock> Node<C> {
         self.locals.push(LocalDestination {
             name_hash,
             dest_hash,
+            kind: LocalDestinationKind::Single,
+        });
+        dest_hash
+    }
+
+    /// Register an interoperable GROUP destination using the shared key as
+    /// deterministic RNS Identity private material as well as its Token key.
+    pub fn register_group_destination(
+        &mut self,
+        app_name: &str,
+        aspects: &[&str],
+        group_key: [u8; 64],
+    ) -> [u8; 16] {
+        let mut x25519 = [0u8; 32];
+        let mut ed25519 = [0u8; 32];
+        x25519.copy_from_slice(&group_key[..32]);
+        ed25519.copy_from_slice(&group_key[32..]);
+        let identity_hash = Identity::from_private_bytes(&x25519, &ed25519).hash();
+        self.register_group_destination_with_identity(app_name, aspects, identity_hash, group_key)
+    }
+
+    /// Register a GROUP destination with separately supplied address Identity
+    /// and symmetric Token key, matching RNS's two-key model.
+    pub fn register_group_destination_with_identity(
+        &mut self,
+        app_name: &str,
+        aspects: &[&str],
+        identity_hash: [u8; 16],
+        group_key: [u8; 64],
+    ) -> [u8; 16] {
+        let name_hash = name_hash(app_name, aspects);
+        let dest_hash = group_destination_hash_with_identity(app_name, aspects, &identity_hash);
+        self.locals.push(LocalDestination {
+            name_hash,
+            dest_hash,
+            kind: LocalDestinationKind::Group { key: group_key },
+        });
+        dest_hash
+    }
+
+    pub fn register_plain_destination(&mut self, app_name: &str, aspects: &[&str]) -> [u8; 16] {
+        let name_hash = name_hash(app_name, aspects);
+        let dest_hash = group_destination_hash(app_name, aspects);
+        self.locals.push(LocalDestination {
+            name_hash,
+            dest_hash,
+            kind: LocalDestinationKind::Plain,
         });
         dest_hash
     }
@@ -120,11 +177,9 @@ impl<C: Clock> Node<C> {
         rng: &mut R,
         interface: u16,
     ) {
-        let Some(local) = self
-            .locals
-            .iter()
-            .find(|local| &local.dest_hash == dest_hash)
-        else {
+        let Some(local) = self.locals.iter().find(|local| {
+            &local.dest_hash == dest_hash && matches!(local.kind, LocalDestinationKind::Single)
+        }) else {
             return;
         };
         let mut random_hash = [0u8; 10];
@@ -190,6 +245,69 @@ impl<C: Clock> Node<C> {
             packet.transport_id = Some(next_hop_transport_id);
         }
         self.outbound.push_back((interface, packet.encode()));
+        Ok(())
+    }
+
+    pub fn send_group_message<R: EntropySource>(
+        &mut self,
+        dest_hash: &[u8; 16],
+        plaintext: &[u8],
+        rng: &mut R,
+    ) -> Result<(), NodeError> {
+        let key = self
+            .locals
+            .iter()
+            .find_map(|local| {
+                (&local.dest_hash == dest_hash)
+                    .then_some(&local.kind)
+                    .and_then(|kind| match kind {
+                        LocalDestinationKind::Group { key } => Some(*key),
+                        _ => None,
+                    })
+            })
+            .ok_or(NodeError::Unknown)?;
+        let mut iv = [0u8; 16];
+        rng.fill(&mut iv);
+        let ciphertext = token::seal_with_key(&key, plaintext, &iv);
+        self.enqueue_destination_packet(Packet::data_for(GROUP, dest_hash, ciphertext), dest_hash)
+    }
+
+    pub fn send_plain_message(
+        &mut self,
+        dest_hash: &[u8; 16],
+        plaintext: &[u8],
+    ) -> Result<(), NodeError> {
+        self.enqueue_destination_packet(
+            Packet::data_for(PLAIN, dest_hash, plaintext.to_vec()),
+            dest_hash,
+        )
+    }
+
+    fn enqueue_destination_packet(
+        &mut self,
+        mut packet: Packet,
+        dest_hash: &[u8; 16],
+    ) -> Result<(), NodeError> {
+        self.paths.prune(self.clock.now_secs());
+        if let Some(path) = self.paths.get(dest_hash) {
+            if path.hops > 1 {
+                let Some(next_hop) = path.next_hop_transport_id else {
+                    return Err(NodeError::Unknown);
+                };
+                packet.header_type = HEADER_2;
+                packet.propagation = TRANSPORT;
+                packet.transport_id = Some(next_hop);
+            }
+            self.outbound.push_back((path.interface, packet.encode()));
+            return Ok(());
+        }
+        if self.interfaces.is_empty() {
+            return Err(NodeError::Unknown);
+        }
+        let encoded = packet.encode();
+        for interface in &self.interfaces {
+            self.outbound.push_back((*interface, encoded.clone()));
+        }
         Ok(())
     }
 
@@ -449,11 +567,9 @@ impl<C: Clock> Node<C> {
         {
             return Vec::new();
         }
-        if !self
-            .locals
-            .iter()
-            .any(|local| &local.dest_hash == dest_hash)
-        {
+        if !self.locals.iter().any(|local| {
+            &local.dest_hash == dest_hash && matches!(local.kind, LocalDestinationKind::Single)
+        }) {
             return Vec::new();
         }
         let Ok((peer_x25519_pub, _peer_ed25519_pub)) = parse_link_request(&packet.data) else {
@@ -1008,11 +1124,11 @@ impl<C: Clock> Node<C> {
         {
             return Vec::new();
         }
-        if !self
+        let local = self
             .locals
             .iter()
-            .any(|local| &local.dest_hash == dest_hash)
-        {
+            .find(|local| &local.dest_hash == dest_hash);
+        if local.is_none() {
             if packet.header_type == HEADER_2 && packet.hops < PATHFINDER_MAX_HOPS {
                 self.paths.prune(self.clock.now_secs());
                 if let Some(path) = self
@@ -1037,7 +1153,16 @@ impl<C: Clock> Node<C> {
             }
             return Vec::new();
         }
-        match token::decrypt(&self.identity, &packet.data) {
+        let Some(local) = local else {
+            return Vec::new();
+        };
+        let result = match (&local.kind, packet.dest_type) {
+            (LocalDestinationKind::Single, SINGLE) => token::decrypt(&self.identity, &packet.data),
+            (LocalDestinationKind::Group { key }, GROUP) => token::open_with_key(key, &packet.data),
+            (LocalDestinationKind::Plain, PLAIN) => Ok(packet.data.clone()),
+            _ => return Vec::new(),
+        };
+        match result {
             Ok(plaintext) => alloc::vec![Event::Message {
                 dest_hash: *dest_hash,
                 plaintext,
@@ -1047,7 +1172,9 @@ impl<C: Clock> Node<C> {
     }
 
     pub fn local_destinations(&self) -> impl Iterator<Item = [u8; 16]> + '_ {
-        self.locals.iter().map(|local| local.dest_hash)
+        self.locals.iter().filter_map(|local| {
+            matches!(local.kind, LocalDestinationKind::Single).then_some(local.dest_hash)
+        })
     }
 
     pub fn knows_path(&self, dest_hash: &[u8; 16]) -> bool {

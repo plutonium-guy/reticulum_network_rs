@@ -1,8 +1,8 @@
 use reticulum_core::identity::Identity;
 use reticulum_core::packet::{ANNOUNCE, HEADER_2, PATH_RESPONSE, Packet, TRANSPORT};
-use reticulum_node::clock::TestClock;
 use reticulum_node::node::Node;
 use reticulum_node::rng::SeededRng;
+use reticulum_node::{Event, clock::TestClock};
 
 #[test]
 fn node_uses_injected_clock() {
@@ -484,4 +484,78 @@ fn two_nodes_transfer_multikilobyte_resource_over_link() {
     assert!(started);
     assert!(progress);
     assert_eq!(complete.as_deref(), Some(data.as_slice()));
+}
+
+#[test]
+fn two_nodes_exchange_group_and_plain_messages() {
+    let identity_a = Identity::from_private_bytes(&[41u8; 32], &[42u8; 32]);
+    let identity_b = Identity::from_private_bytes(&[43u8; 32], &[44u8; 32]);
+    let mut a = Node::new(identity_a);
+    let mut b = Node::new(identity_b);
+    a.register_interface(7);
+    b.register_interface(7);
+
+    let group_key = [0x5Au8; 64];
+    let group_a = a.register_group_destination("group_test", &["messages"], group_key);
+    let group_b = b.register_group_destination("group_test", &["messages"], group_key);
+    assert_eq!(group_a, group_b);
+    let mut rng = SeededRng::new(91);
+    a.send_group_message(&group_b, b"group secret", &mut rng)
+        .unwrap();
+    let (_, packet) = a.poll_outbound().unwrap();
+    assert_eq!(
+        b.handle_inbound(&packet, 7),
+        vec![Event::Message {
+            dest_hash: group_b,
+            plaintext: b"group secret".to_vec(),
+        }]
+    );
+
+    let plain_a = a.register_plain_destination("plain_test", &["messages"]);
+    let plain_b = b.register_plain_destination("plain_test", &["messages"]);
+    assert_eq!(plain_a, plain_b);
+    a.send_plain_message(&plain_b, b"plain text").unwrap();
+    let (_, packet) = a.poll_outbound().unwrap();
+    let decoded = Packet::decode(&packet).unwrap();
+    assert_eq!(decoded.data, b"plain text");
+    assert_eq!(
+        b.handle_inbound(&packet, 7),
+        vec![Event::Message {
+            dest_hash: plain_b,
+            plaintext: b"plain text".to_vec(),
+        }]
+    );
+}
+
+#[test]
+fn group_destination_rejects_ciphertext_from_wrong_key() {
+    let mut a = Node::new(Identity::from_private_bytes(&[45u8; 32], &[46u8; 32]));
+    let mut b = Node::new(Identity::from_private_bytes(&[47u8; 32], &[48u8; 32]));
+    a.register_interface(8);
+    b.register_interface(8);
+    let identity_hash = [0x11; 16];
+    let destination = a.register_group_destination_with_identity(
+        "group_test",
+        &["wrong_key"],
+        identity_hash,
+        [0x22; 64],
+    );
+    assert_eq!(
+        destination,
+        b.register_group_destination_with_identity(
+            "group_test",
+            &["wrong_key"],
+            identity_hash,
+            [0x33; 64],
+        )
+    );
+    let mut rng = SeededRng::new(92);
+    a.send_group_message(&destination, b"not for b", &mut rng)
+        .unwrap();
+    let (_, packet) = a.poll_outbound().unwrap();
+    assert!(
+        b.handle_inbound(&packet, 8)
+            .iter()
+            .all(|event| !matches!(event, Event::Message { .. }))
+    );
 }
