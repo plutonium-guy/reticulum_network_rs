@@ -10,11 +10,64 @@ use rmp::{
     encode::{write_bin, write_map_len, write_nil, write_str, write_uint},
 };
 
-use crate::CoreError;
+use crate::{CoreError, EntropySource, hash::full_hash};
 
 pub const MAPHASH_LEN: usize = 4;
 pub const RANDOM_HASH_SIZE: usize = 4;
 pub const MAX_EFFICIENT_SIZE: usize = 1024 * 1024 - 1;
+
+pub fn split_parts(data: &[u8], sdu: usize) -> Vec<Vec<u8>> {
+    if sdu == 0 {
+        return Vec::new();
+    }
+    data.chunks(sdu).map(<[u8]>::to_vec).collect()
+}
+
+pub fn reassemble(parts: &[Vec<u8>]) -> Vec<u8> {
+    let capacity = parts.iter().map(Vec::len).sum();
+    let mut data = Vec::with_capacity(capacity);
+    for part in parts {
+        data.extend_from_slice(part);
+    }
+    data
+}
+
+pub fn random_hash<R: EntropySource>(rng: &mut R) -> [u8; RANDOM_HASH_SIZE] {
+    let mut source = [0u8; 16];
+    rng.fill(&mut source);
+    full_hash(&source)[..RANDOM_HASH_SIZE]
+        .try_into()
+        .unwrap_or([0u8; RANDOM_HASH_SIZE])
+}
+
+pub fn resource_hash(data: &[u8], random: &[u8; RANDOM_HASH_SIZE]) -> [u8; 32] {
+    hash_joined(data, random)
+}
+
+pub fn resource_proof(data: &[u8], hash: &[u8; 32]) -> [u8; 32] {
+    hash_joined(data, hash)
+}
+
+pub fn map_hash(part: &[u8], random: &[u8; RANDOM_HASH_SIZE]) -> [u8; MAPHASH_LEN] {
+    hash_joined(part, random)[..MAPHASH_LEN]
+        .try_into()
+        .unwrap_or([0u8; MAPHASH_LEN])
+}
+
+pub fn hashmap(parts: &[Vec<u8>], random: &[u8; RANDOM_HASH_SIZE]) -> Vec<u8> {
+    let mut map = Vec::with_capacity(parts.len() * MAPHASH_LEN);
+    for part in parts {
+        map.extend_from_slice(&map_hash(part, random));
+    }
+    map
+}
+
+fn hash_joined(left: &[u8], right: &[u8]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(left.len() + right.len());
+    input.extend_from_slice(left);
+    input.extend_from_slice(right);
+    full_hash(&input)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceAdvertisement {

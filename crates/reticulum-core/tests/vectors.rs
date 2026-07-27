@@ -261,6 +261,58 @@ fn resource_advertisement_matches_rns_vector() {
 }
 
 #[test]
+fn resource_hashmap_and_proof_match_rns_vectors() {
+    use reticulum_core::{
+        resource::{hashmap, map_hash, reassemble, resource_hash, resource_proof, split_parts},
+        token::seal_with_key,
+    };
+
+    let vector = load("resource_maphash.json");
+    let key: [u8; 64] = hexf(&vector, "derived_key").try_into().unwrap();
+    let iv: [u8; 16] = hexf(&vector, "iv").try_into().unwrap();
+    let prefix = hexf(&vector, "random_prefix");
+    let random: [u8; 4] = hexf(&vector, "random_hash").try_into().unwrap();
+    let plaintext = hexf(&vector, "plaintext");
+    let mut stream_plaintext = prefix;
+    stream_plaintext.extend_from_slice(&plaintext);
+    let encrypted = seal_with_key(&key, &stream_plaintext, &iv);
+    assert_eq!(encrypted, hexf(&vector, "encrypted_stream"));
+
+    let sdu = usize::try_from(vector["sdu"].as_u64().unwrap()).unwrap();
+    let parts = split_parts(&encrypted, sdu);
+    assert_eq!(reassemble(&parts), encrypted);
+    let expected_parts: Vec<Vec<u8>> = vector["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|part| hex::decode(part.as_str().unwrap()).unwrap())
+        .collect();
+    assert_eq!(parts, expected_parts);
+    let expected_hashes: Vec<Vec<u8>> = vector["map_hashes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hash| hex::decode(hash.as_str().unwrap()).unwrap())
+        .collect();
+    let actual_hashes: Vec<Vec<u8>> = parts
+        .iter()
+        .map(|part| map_hash(part, &random).to_vec())
+        .collect();
+    assert_eq!(actual_hashes, expected_hashes);
+    assert_eq!(hashmap(&parts, &random), hexf(&vector, "hashmap"));
+    let hash = resource_hash(&plaintext, &random);
+    assert_eq!(hash.to_vec(), hexf(&vector, "resource_hash"));
+
+    let proof_vector = load("resource_proof.json");
+    let proof = resource_proof(&plaintext, &hash);
+    assert_eq!(proof.to_vec(), hexf(&proof_vector, "proof"));
+    assert_eq!(
+        [hash.as_slice(), proof.as_slice()].concat(),
+        hexf(&proof_vector, "proof_data")
+    );
+}
+
+#[test]
 fn link_request_and_ephemeral_keys_match_rns_vector() {
     use reticulum_core::{
         EntropySource,
