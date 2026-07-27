@@ -106,6 +106,18 @@ fn token_encrypt_matches_rns_vector() {
     assert_eq!(out, hexf(&v, "token"));
 }
 
+#[test]
+fn token_keyed_matches_rns_vector() {
+    let vector = load("token_keyed.json");
+    let key: [u8; 64] = hexf(&vector, "derived_key").try_into().unwrap();
+    let iv: [u8; 16] = hexf(&vector, "iv").try_into().unwrap();
+    let plaintext = hexf(&vector, "plaintext");
+    let expected = hexf(&vector, "token");
+
+    assert_eq!(token::open_with_key(&key, &expected).unwrap(), plaintext);
+    assert_eq!(token::seal_with_key(&key, &plaintext, &iv), expected);
+}
+
 use reticulum_core::packet::Packet;
 
 #[test]

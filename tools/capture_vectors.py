@@ -86,6 +86,7 @@ os.makedirs(OUT, exist_ok=True)
 RATCHET_ONLY = "--ratchet-only" in sys.argv
 TRANSPORT_ONLY = "--transport-only" in sys.argv
 PATH_REQUEST_ONLY = "--path-request-only" in sys.argv
+KEYED_TOKEN_ONLY = "--keyed-token-only" in sys.argv
 
 
 def w(name, obj):
@@ -94,6 +95,8 @@ def w(name, obj):
     if TRANSPORT_ONLY and name != "packet_header2.json":
         return
     if PATH_REQUEST_ONLY and name != "path_request.json":
+        return
+    if KEYED_TOKEN_ONLY and name != "token_keyed.json":
         return
     with open(os.path.join(OUT, name), "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
@@ -202,6 +205,27 @@ w(
         "iv": hx(fixed_iv),
         "plaintext": hx(deterministic_plaintext),
         "token": hx(deterministic_token),
+    },
+)
+
+# --- deterministic raw-keyed token (Link cipher) ---
+link_derived_key = seed("link/token/signing") + seed("link/token/encryption")
+link_iv = seed("link/token/iv")[:16]
+link_plaintext = b"keyed link token"
+real_urandom = os.urandom
+try:
+    os.urandom = lambda length: link_iv if length == 16 else real_urandom(length)
+    link_token = Token(link_derived_key).encrypt(link_plaintext)
+finally:
+    os.urandom = real_urandom
+
+w(
+    "token_keyed.json",
+    {
+        "derived_key": hx(link_derived_key),
+        "iv": hx(link_iv),
+        "plaintext": hx(link_plaintext),
+        "token": hx(link_token),
     },
 )
 
