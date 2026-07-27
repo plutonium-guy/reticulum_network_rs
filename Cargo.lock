@@ -925,6 +925,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "reticulum-lxmf"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "reticulum-core",
+ "reticulum-node",
+ "rmp",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "reticulum-node"
 version = "0.1.0"
 dependencies = [

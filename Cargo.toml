@@ -9,6 +9,7 @@ members = [
     "crates/reticulum-wasm",
     "crates/reticulum-embedded",
     "crates/reticulum-ffi",
+    "crates/reticulum-lxmf",
 ]
 
 [workspace.package]

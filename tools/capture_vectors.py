@@ -91,6 +91,7 @@ LINK_ONLY = "--link-only" in sys.argv
 RESOURCE_ONLY = "--resource-only" in sys.argv
 DESTTYPES_ONLY = "--desttypes-only" in sys.argv
 IFAC_ONLY = "--ifac-only" in sys.argv
+LXMF_ONLY = "--lxmf-only" in sys.argv
 LINK_VECTOR_NAMES = {
     "linkrequest.json",
     "link_handshake.json",
@@ -125,6 +126,8 @@ def w(name, obj):
     if DESTTYPES_ONLY and name not in DESTTYPES_VECTOR_NAMES:
         return
     if IFAC_ONLY and name != "ifac_frame.json":
+        return
+    if LXMF_ONLY and name != "lxmf_message.json":
         return
     with open(os.path.join(OUT, name), "w") as f:
         json.dump(obj, f, indent=2, sort_keys=True)
@@ -793,5 +796,60 @@ def hdlc_escape(data):
 
 
 w("hdlc.json", {"raw": hx(raw_bytes), "framed": hx(hdlc_escape(raw_bytes))})
+
+# --- LXMF 1.1.0 signed message ---
+# LXMessage.pack() is the wire-format oracle. Fixed private material, hashes,
+# timestamp, bytes and insertion-ordered fields make this vector reproducible.
+import LXMF
+import RNS.vendor.umsgpack as msgpack
+
+lxmf_destination_identity = RNS.Identity.from_bytes(
+    seed("lxmf/destination/x25519") + seed("lxmf/destination/ed25519")
+)
+lxmf_source = RNS.Destination(
+    idty, RNS.Destination.IN, RNS.Destination.SINGLE, "lxmf", "delivery"
+)
+lxmf_destination = RNS.Destination(
+    lxmf_destination_identity,
+    RNS.Destination.OUT,
+    RNS.Destination.SINGLE,
+    "lxmf",
+    "delivery",
+)
+lxmf_fields = {
+    1: b"attachment-metadata",
+    "custom": [1, True, b"opaque"],
+}
+lxmf_timestamp = 1720000000.25
+lxmf_title = b"Vector title"
+lxmf_content = b"Vector content \x00\xff"
+lxmf = LXMF.LXMessage(
+    lxmf_destination,
+    lxmf_source,
+    title=lxmf_title,
+    content=lxmf_content,
+    fields=lxmf_fields,
+)
+lxmf.timestamp = lxmf_timestamp
+lxmf.pack()
+
+w(
+    "lxmf_message.json",
+    {
+        "source_prv_x": hx(idty.prv_bytes),
+        "source_prv_ed": hx(idty.sig_prv_bytes),
+        "source_public": hx(idty.get_public_key()),
+        "destination": hx(lxmf_destination.hash),
+        "source": hx(lxmf_source.hash),
+        "timestamp": lxmf_timestamp,
+        "title": hx(lxmf_title),
+        "content": hx(lxmf_content),
+        "fields_msgpack": hx(msgpack.packb(lxmf_fields)),
+        "payload_msgpack": hx(msgpack.packb(lxmf.payload)),
+        "packed_hex": hx(lxmf.packed),
+        "hash": hx(lxmf.hash),
+        "signature": hx(lxmf.signature),
+    },
+)
 
 print("wrote vectors to", os.path.abspath(OUT))

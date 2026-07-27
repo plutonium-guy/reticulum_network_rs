@@ -16,4 +16,6 @@ jobs:
       - run: cargo test --workspace
       - run: cargo build -p reticulum-core -p reticulum-interface -p reticulum-node --target wasm32-unknown-unknown
       - run: cargo build -p reticulum-wasm --target wasm32-unknown-unknown
+      - run: cargo build -p reticulum-lxmf --target wasm32-unknown-unknown
       - run: cargo build -p reticulum-core -p reticulum-interface -p reticulum-node --target thumbv7em-none-eabihf
+      - run: cargo build -p reticulum-lxmf --target thumbv7em-none-eabihf

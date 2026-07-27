@@ -1,0 +1,15 @@
+[package]
+name = "reticulum-lxmf"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+reticulum-core = { path = "../reticulum-core" }
+reticulum-node = { path = "../reticulum-node" }
+rmp.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
