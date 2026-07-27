@@ -68,6 +68,10 @@ enum Command {
         fields: Vec<u8>,
         reply: oneshot::Sender<Result<[u8; 16], NodeError>>,
     },
+    Snapshot {
+        reply: oneshot::Sender<DriverSnapshot>,
+    },
+    RequestPath([u8; 16]),
     CloseLink([u8; 16]),
     Shutdown,
 }
@@ -79,6 +83,33 @@ pub struct DriverClosed;
 pub enum DriverError {
     Closed,
     Node(NodeError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceSnapshot {
+    pub id: u16,
+    pub online: bool,
+    pub rx_packets: u64,
+    pub rx_bytes: u64,
+    pub tx_packets: u64,
+    pub tx_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathSnapshot {
+    pub destination: [u8; 16],
+    pub interface: u16,
+    pub next_hop_transport_id: Option<[u8; 16]>,
+    pub hops: u8,
+    pub expires_at: u64,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriverSnapshot {
+    pub identity_hash: [u8; 16],
+    pub interfaces: Vec<InterfaceSnapshot>,
+    pub paths: Vec<PathSnapshot>,
 }
 
 #[derive(Clone)]
@@ -249,6 +280,22 @@ impl DriverHandle {
             .map_err(DriverError::Node)
     }
 
+    pub async fn snapshot(&self) -> Result<DriverSnapshot, DriverClosed> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::Snapshot { reply })
+            .await
+            .map_err(|_| DriverClosed)?;
+        response.await.map_err(|_| DriverClosed)
+    }
+
+    pub async fn request_path(&self, dest_hash: [u8; 16]) -> Result<(), DriverClosed> {
+        self.commands
+            .send(Command::RequestPath(dest_hash))
+            .await
+            .map_err(|_| DriverClosed)
+    }
+
     pub async fn shutdown(&self) -> Result<(), DriverClosed> {
         self.commands
             .send(Command::Shutdown)
@@ -274,6 +321,7 @@ enum Inbound {
 pub struct Driver<C: Clock> {
     node: Node<C>,
     interfaces: BTreeMap<u16, mpsc::Sender<Vec<u8>>>,
+    interface_stats: BTreeMap<u16, InterfaceSnapshot>,
     inbound_sender: mpsc::Sender<Inbound>,
     inbound: mpsc::Receiver<Inbound>,
     registrations: Option<mpsc::Receiver<Box<dyn AsyncInterface>>>,
@@ -394,12 +442,14 @@ impl<C: Clock + Send + 'static> Driver<C> {
         let (inbound_tx, inbound_rx) = mpsc::channel(INTERFACE_CAPACITY);
         let (registrations_tx, registrations_rx) = mpsc::channel(REGISTRATION_CAPACITY);
         let mut interface_senders = BTreeMap::new();
+        let mut interface_stats = BTreeMap::new();
         let mut highest_id = None;
         for interface in interfaces {
             let id = interface.id();
             highest_id = Some(highest_id.map_or(id, |highest: u16| highest.max(id)));
             node.register_interface(id);
             interface_senders.insert(id, spawn_interface(interface, inbound_tx.clone()));
+            interface_stats.insert(id, InterfaceSnapshot::new(id));
         }
         let registrar = InterfaceRegistrar {
             registrations: registrations_tx,
@@ -409,6 +459,7 @@ impl<C: Clock + Send + 'static> Driver<C> {
             Self {
                 node,
                 interfaces: interface_senders,
+                interface_stats,
                 inbound_sender: inbound_tx,
                 inbound: inbound_rx,
                 registrations: Some(registrations_rx),
@@ -568,6 +619,13 @@ impl<C: Clock + Send + 'static> Driver<C> {
                             let _ = reply.send(result);
                             self.drain_outbound().await?;
                         }
+                        Some(Command::Snapshot { reply }) => {
+                            let _ = reply.send(self.snapshot_state());
+                        }
+                        Some(Command::RequestPath(dest_hash)) => {
+                            self.node.request_path(&dest_hash, &mut self.entropy);
+                            self.drain_outbound().await?;
+                        }
                         Some(Command::CloseLink(link_id)) => {
                             self.node.close_link(&link_id);
                             let events = self.node.tick();
@@ -580,6 +638,12 @@ impl<C: Clock + Send + 'static> Driver<C> {
                 inbound = self.inbound.recv() => {
                     match inbound {
                         Some(Inbound::Packet { interface, bytes }) => {
+                            if let Some(stats) = self.interface_stats.get_mut(&interface) {
+                                stats.rx_packets = stats.rx_packets.saturating_add(1);
+                                stats.rx_bytes = stats
+                                    .rx_bytes
+                                    .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+                            }
                             let events = self.node.handle_inbound_with_entropy(
                                 &bytes,
                                 interface,
@@ -590,6 +654,9 @@ impl<C: Clock + Send + 'static> Driver<C> {
                         }
                         Some(Inbound::Closed { interface }) => {
                             self.interfaces.remove(&interface);
+                            if let Some(stats) = self.interface_stats.get_mut(&interface) {
+                                stats.online = false;
+                            }
                             self.node.unregister_interface(interface);
                             if self.interfaces.is_empty() && !self.keep_alive {
                                 return Ok(());
@@ -597,6 +664,9 @@ impl<C: Clock + Send + 'static> Driver<C> {
                         }
                         Some(Inbound::Error { interface, error }) => {
                             self.interfaces.remove(&interface);
+                            if let Some(stats) = self.interface_stats.get_mut(&interface) {
+                                stats.online = false;
+                            }
                             self.node.unregister_interface(interface);
                             if self.interfaces.is_empty() && !self.keep_alive {
                                 return Err(error);
@@ -615,6 +685,7 @@ impl<C: Clock + Send + 'static> Driver<C> {
                                 continue;
                             }
                             self.node.register_interface(id);
+                            self.interface_stats.insert(id, InterfaceSnapshot::new(id));
                             let sender = spawn_interface(
                                 interface,
                                 self.inbound_sender.clone(),
@@ -730,9 +801,16 @@ impl<C: Clock + Send + 'static> Driver<C> {
                 self.emit(Event::Error(NodeError::Unknown)).await;
                 continue;
             };
+            let packet_length = u64::try_from(packet.len()).unwrap_or(u64::MAX);
             if sender.send(packet).await.is_err() {
                 self.interfaces.remove(&interface);
+                if let Some(stats) = self.interface_stats.get_mut(&interface) {
+                    stats.online = false;
+                }
                 self.emit(Event::Error(NodeError::Unknown)).await;
+            } else if let Some(stats) = self.interface_stats.get_mut(&interface) {
+                stats.tx_packets = stats.tx_packets.saturating_add(1);
+                stats.tx_bytes = stats.tx_bytes.saturating_add(packet_length);
             }
         }
         Ok(())
@@ -740,6 +818,43 @@ impl<C: Clock + Send + 'static> Driver<C> {
 
     async fn emit(&self, event: Event) {
         let _ = self.events.send(event).await;
+    }
+
+    fn snapshot_state(&self) -> DriverSnapshot {
+        let mut interfaces: Vec<_> = self.interface_stats.values().cloned().collect();
+        interfaces.sort_by_key(|interface| interface.id);
+        let mut paths: Vec<_> = self
+            .node
+            .paths_snapshot()
+            .into_iter()
+            .map(|(destination, entry)| PathSnapshot {
+                destination,
+                interface: entry.interface,
+                next_hop_transport_id: entry.next_hop_transport_id,
+                hops: entry.hops,
+                expires_at: entry.expires_at,
+                timestamp: entry.timestamp,
+            })
+            .collect();
+        paths.sort_by_key(|path| path.destination);
+        DriverSnapshot {
+            identity_hash: self.node.identity().hash(),
+            interfaces,
+            paths,
+        }
+    }
+}
+
+impl InterfaceSnapshot {
+    fn new(id: u16) -> Self {
+        Self {
+            id,
+            online: true,
+            rx_packets: 0,
+            rx_bytes: 0,
+            tx_packets: 0,
+            tx_bytes: 0,
+        }
     }
 }
 
@@ -865,6 +980,17 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(matches!(message, Event::Message { plaintext, .. } if plaintext == b"over tcp"));
+        let a_snapshot = a_handle.snapshot().await.unwrap();
+        assert_eq!(a_snapshot.interfaces.len(), 1);
+        assert!(a_snapshot.interfaces[0].online);
+        assert!(a_snapshot.interfaces[0].tx_packets >= 2);
+        assert!(a_snapshot.interfaces[0].rx_packets >= 1);
+        assert!(
+            a_snapshot
+                .paths
+                .iter()
+                .any(|path| path.destination == b_dest)
+        );
 
         a_handle.shutdown().await.unwrap();
         b_handle.shutdown().await.unwrap();

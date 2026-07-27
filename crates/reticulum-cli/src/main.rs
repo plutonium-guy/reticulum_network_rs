@@ -1,4 +1,5 @@
 mod config;
+mod status;
 
 use std::{error::Error, io, path::PathBuf, time::Duration};
 
@@ -12,6 +13,8 @@ use reticulum_tokio::{
     udp::UdpInterface,
 };
 use tokio::sync::mpsc;
+
+use crate::status::{format_paths, format_status};
 
 enum Mode {
     Run,
@@ -47,6 +50,14 @@ enum Mode {
         direct: bool,
     },
     LxmfReceive,
+    Status,
+    Path {
+        dest_hash: Option<[u8; 16]>,
+    },
+    Identity,
+    Probe {
+        dest_hash: [u8; 16],
+    },
 }
 
 #[tokio::main]
@@ -63,6 +74,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let mode = parse_mode(&args)?;
     let config = Config::load(config_path.as_deref())?;
     let identity = save_or_create_identity(&config.identity_path)?;
+    if matches!(mode, Mode::Identity) {
+        println!("identity {}", hex::encode(identity.hash()));
+        return Ok(());
+    }
     let mut node = Node::with_clock(identity, SystemClock);
     if config.transport_enabled {
         node.enable_transport(true);
@@ -511,6 +526,56 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
+        Mode::Status => {
+            let snapshot = handle.snapshot().await.map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "driver stopped before status")
+            })?;
+            println!("{}", format_status(&snapshot));
+            shutdown(&handle).await?;
+        }
+        Mode::Path { dest_hash } => {
+            let snapshot = handle.snapshot().await.map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "driver stopped before path snapshot",
+                )
+            })?;
+            println!("{}", format_paths(&snapshot, dest_hash));
+            shutdown(&handle).await?;
+        }
+        Mode::Probe { dest_hash } => {
+            handle.request_path(dest_hash).await.map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "driver stopped before path request",
+                )
+            })?;
+            println!("path request sent {}", hex::encode(dest_hash));
+            let _ = tokio::time::timeout(Duration::from_secs(5), async {
+                while let Some(event) = events_rx.recv().await {
+                    print_event(&event);
+                    if matches!(
+                        event,
+                        Event::Announce {
+                            dest_hash: announced,
+                            ..
+                        } if announced == dest_hash
+                    ) {
+                        break;
+                    }
+                }
+            })
+            .await;
+            let snapshot = handle.snapshot().await.map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "driver stopped before probe result",
+                )
+            })?;
+            println!("{}", format_paths(&snapshot, Some(dest_hash)));
+            shutdown(&handle).await?;
+        }
+        Mode::Identity => unreachable!("identity mode exits before interface startup"),
     }
 
     driver_task.await??;
@@ -619,8 +684,17 @@ fn parse_mode(args: &[String]) -> Result<Mode, Box<dyn Error>> {
         {
             Ok(Mode::LxmfReceive)
         }
+        Some("status") if args.len() == 1 => Ok(Mode::Status),
+        Some("path") if args.len() == 1 => Ok(Mode::Path { dest_hash: None }),
+        Some("path") if args.len() == 2 => Ok(Mode::Path {
+            dest_hash: Some(parse_hash(&args[1], "destination")?),
+        }),
+        Some("identity") if args.len() == 1 => Ok(Mode::Identity),
+        Some("probe") if args.len() == 2 => Ok(Mode::Probe {
+            dest_hash: parse_hash(&args[1], "destination")?,
+        }),
         _ => Err(
-            "usage: reticulumd <run|announce|send DEST_HASH TEXT [--prove]|send-group DEST_HASH TEXT|send-plain DEST_HASH TEXT|link DEST_HASH|link-send DEST_HASH TEXT|send-file DEST_HASH PATH|receive-file OUT_DIR|lxmf send DEST_HASH TITLE CONTENT [--direct|--opportunistic]|lxmf recv> [--config PATH]"
+            "usage: reticulumd <run|announce|send DEST_HASH TEXT [--prove]|send-group DEST_HASH TEXT|send-plain DEST_HASH TEXT|link DEST_HASH|link-send DEST_HASH TEXT|send-file DEST_HASH PATH|receive-file OUT_DIR|lxmf send DEST_HASH TITLE CONTENT [--direct|--opportunistic]|lxmf recv|status|path [DEST_HASH]|identity|probe DEST_HASH> [--config PATH]"
                 .into(),
         ),
     }

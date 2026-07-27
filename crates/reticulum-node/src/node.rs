@@ -1313,6 +1313,14 @@ impl<C: Clock> Node<C> {
         self.paths.get(dest_hash).map(|entry| entry.public.clone())
     }
 
+    pub fn interfaces_snapshot(&self) -> Vec<u16> {
+        self.interfaces.clone()
+    }
+
+    pub fn paths_snapshot(&self) -> Vec<([u8; 16], PathEntry)> {
+        self.paths.snapshot()
+    }
+
     pub fn prune_paths(&mut self) -> usize {
         self.paths.prune(self.clock.now_secs())
     }

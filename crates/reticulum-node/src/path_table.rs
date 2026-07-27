@@ -68,6 +68,13 @@ impl PathTable {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    pub fn snapshot(&self) -> alloc::vec::Vec<([u8; 16], PathEntry)> {
+        self.entries
+            .iter()
+            .map(|(destination, entry)| (*destination, entry.clone()))
+            .collect()
+    }
 }
 
 #[cfg(test)]
