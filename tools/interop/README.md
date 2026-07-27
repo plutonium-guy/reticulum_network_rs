@@ -142,3 +142,10 @@ PASS ifac Rust <-> Python
 PASS IFAC mismatched passphrase rejected
 SKIP AutoInterface live gate: one-host RNS/Rust peers cannot both bind the same link-local data port; use two LAN hosts
 ```
+
+## Milestone 7 Browser WASM
+
+Run `./tools/interop/run_wasm_interop.sh` to build the web package and launch a
+headless Chrome node through the binary WebSocket-to-TCP bridge. The browser
+node and Python RNS 1.4.1 node must each receive the other's encrypted
+message. `tools/wasm/index.html` is also a manual browser demo.
