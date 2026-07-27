@@ -155,3 +155,24 @@ message. `tools/wasm/index.html` is also a manual browser demo.
 Run `./tools/interop/run_ffi_interop.sh`. The harness calls the UniFFI-exported
 `ReticulumClient` surface and must exchange encrypted messages in both
 directions with Python RNS 1.4.1 over the TCP interface.
+
+## Milestone 8 LXMF
+
+Run `./tools/interop/run_lxmf_interop.sh` to exchange signed LXMF messages
+with Python LXMF 1.1.0 over the RNS 1.4.1 shared-instance transport. The gate
+uses direct delivery over an authenticated Link from Rust to Python and
+opportunistic single-packet delivery from Python to Rust.
+
+Verified on 2026-07-27:
+
+```text
+PASS Rust -> Python LXMF direct: Rust title / hello from rust lxmf
+PASS Python -> Rust LXMF opportunistic: Python title / hello from python lxmf
+```
+
+The peers surfaced the decoded messages and arbitrary fields:
+
+```text
+PYTHON_LXMF_RECEIVED title=Rust title content=hello from rust lxmf fields={}
+lxmf message <destination> <source> timestamp=<time> title=Python title content=hello from python lxmf fields=812ac40c707974686f6e2d6669656c64
+```
