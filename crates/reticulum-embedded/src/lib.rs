@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+pub mod uart;
+
 use embassy_time::Instant;
 use reticulum_core::EntropySource;
 use reticulum_node::Clock;

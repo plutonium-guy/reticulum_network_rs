@@ -6,7 +6,9 @@ license.workspace = true
 autobins = false
 
 [dependencies]
+embassy-futures = "0.1"
 embassy-time = { version = "0.5", default-features = false, features = ["tick-hz-1_000_000"] }
+embedded-io-async = "0.7"
 reticulum-core = { path = "../reticulum-core" }
 reticulum-interface = { path = "../reticulum-interface" }
 reticulum-node = { path = "../reticulum-node" }
