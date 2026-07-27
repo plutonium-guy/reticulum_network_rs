@@ -14,12 +14,24 @@ pub const LINK_PUBLIC_KEY_LEN: usize = 32;
 pub const LINK_REQUEST_LEN: usize = 64;
 pub const LINK_SIGNALLING_LEN: usize = 3;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct LinkEphemeral {
     pub x25519_prv: [u8; LINK_PUBLIC_KEY_LEN],
     pub x25519_pub: [u8; LINK_PUBLIC_KEY_LEN],
     pub ed25519_prv: [u8; LINK_PUBLIC_KEY_LEN],
     pub ed25519_pub: [u8; LINK_PUBLIC_KEY_LEN],
+}
+
+impl core::fmt::Debug for LinkEphemeral {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Never expose the private key halves via Debug (leak-safety, mirrors Identity).
+        f.debug_struct("LinkEphemeral")
+            .field("x25519_pub", &self.x25519_pub)
+            .field("ed25519_pub", &self.ed25519_pub)
+            .field("x25519_prv", &"<redacted>")
+            .field("ed25519_prv", &"<redacted>")
+            .finish()
+    }
 }
 
 impl LinkEphemeral {
