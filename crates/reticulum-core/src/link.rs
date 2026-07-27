@@ -1,6 +1,8 @@
 use crate::{CoreError, EntropySource, hash::truncated_hash, packet::Packet};
 use alloc::vec::Vec;
 use ed25519_dalek::SigningKey;
+use hkdf::Hkdf;
+use sha2::Sha256;
 use x25519_dalek::{PublicKey as XPublic, StaticSecret};
 
 pub const LINK_PUBLIC_KEY_LEN: usize = 32;
@@ -63,4 +65,19 @@ pub fn link_id_from_request(packet: &Packet) -> [u8; 16] {
         hashable.truncate(hashable.len() - (packet.data.len() - LINK_REQUEST_LEN));
     }
     truncated_hash(&hashable)
+}
+
+pub fn derive_link_key(
+    own_x25519_prv: &[u8; 32],
+    peer_x25519_pub: &[u8; 32],
+    link_id: &[u8; 16],
+) -> [u8; 64] {
+    let secret = StaticSecret::from(*own_x25519_prv);
+    let shared = secret
+        .diffie_hellman(&XPublic::from(*peer_x25519_pub))
+        .to_bytes();
+    let hkdf = Hkdf::<Sha256>::new(Some(link_id), &shared);
+    let mut derived_key = [0u8; 64];
+    let _ = hkdf.expand(&[], &mut derived_key);
+    derived_key
 }

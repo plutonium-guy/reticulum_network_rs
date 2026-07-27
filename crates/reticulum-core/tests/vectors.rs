@@ -253,6 +253,20 @@ fn link_request_and_ephemeral_keys_match_rns_vector() {
 }
 
 #[test]
+fn link_handshake_key_matches_rns_vector() {
+    use reticulum_core::link::derive_link_key;
+
+    let vector = load("link_handshake.json");
+    let own: [u8; 32] = hexf(&vector, "own_x25519_prv").try_into().unwrap();
+    let peer: [u8; 32] = hexf(&vector, "peer_x25519_pub").try_into().unwrap();
+    let link_id: [u8; 16] = hexf(&vector, "link_id").try_into().unwrap();
+    assert_eq!(
+        derive_link_key(&own, &peer, &link_id).to_vec(),
+        hexf(&vector, "derived_key")
+    );
+}
+
+#[test]
 fn packet_decode_rejects_short_input() {
     assert!(Packet::decode(&[0x00]).is_err());
 }
