@@ -95,6 +95,7 @@ LXMF_ONLY = "--lxmf-only" in sys.argv
 LXMF_VECTOR_NAMES = {
     "lxmf_message.json",
     "lxmf_propagation.json",
+    "lxmf_stamp.json",
 }
 LINK_VECTOR_NAMES = {
     "linkrequest.json",
@@ -917,6 +918,41 @@ w(
         "lxmf_data": hx(propagation_lxmf_data),
         "transient_id": hx(RNS.Identity.full_hash(propagation_lxmf_data)),
         "propagation_packed": hx(propagation_packed),
+    },
+)
+
+# --- LXMF 1.1.0 delivery stamps ---
+# Keep the PoW cost deliberately low for a fast deterministic oracle, while
+# retaining the production 3000-round workblock expansion.
+from LXMF import LXStamper
+
+stamp_cost = 4
+stamp_workblock = LXStamper.stamp_workblock(lxmf.hash)
+stamp_counter = 0
+while True:
+    stamp = stamp_counter.to_bytes(LXStamper.STAMP_SIZE, byteorder="big")
+    if LXStamper.stamp_valid(stamp, stamp_cost, stamp_workblock):
+        break
+    stamp_counter += 1
+
+ticket = seed("lxmf/stamp/ticket")
+ticket_stamp = RNS.Identity.truncated_hash(ticket + lxmf.hash)
+stamped_payload = [lxmf_timestamp, lxmf_title, lxmf_content, lxmf_fields, stamp]
+stamped_packed = lxmf.packed[: 2 * LXMF.LXMessage.DESTINATION_LENGTH + LXMF.LXMessage.SIGNATURE_LENGTH]
+stamped_packed += msgpack.packb(stamped_payload)
+
+w(
+    "lxmf_stamp.json",
+    {
+        "message_id": hx(lxmf.hash),
+        "stamp_cost": stamp_cost,
+        "expand_rounds": LXStamper.WORKBLOCK_EXPAND_ROUNDS,
+        "workblock_sha256": hx(RNS.Identity.full_hash(stamp_workblock)),
+        "stamp": hx(stamp),
+        "stamp_value": LXStamper.stamp_value(stamp_workblock, stamp),
+        "ticket": hx(ticket),
+        "ticket_stamp": hx(ticket_stamp),
+        "stamped_packed": hx(stamped_packed),
     },
 )
 

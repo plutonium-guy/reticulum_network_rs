@@ -1,7 +1,8 @@
 use reticulum_core::{EntropySource, identity::Identity};
 use reticulum_lxmf::{
-    LxmfMessage, build_propagation_upload, decrypt_propagated_message,
-    propagation_destination_hash, unpack_propagation_container,
+    DELIVERY_WORKBLOCK_ROUNDS, LxmfMessage, StampValidation, build_propagation_upload,
+    decrypt_propagated_message, propagation_destination_hash, stamp_value, stamp_workblock,
+    unpack_propagation_container, verify_optional_stamp, verify_stamp, verify_ticket_stamp,
 };
 use serde::Deserialize;
 
@@ -44,6 +45,19 @@ struct PropagationVector {
     lxmf_data: String,
     transient_id: String,
     propagation_packed: String,
+}
+
+#[derive(Deserialize)]
+struct StampVector {
+    message_id: String,
+    stamp_cost: u16,
+    expand_rounds: u32,
+    workblock_sha256: String,
+    stamp: String,
+    stamp_value: u16,
+    ticket: String,
+    ticket_stamp: String,
+    stamped_packed: String,
 }
 
 struct VectorEntropy {
@@ -197,4 +211,51 @@ fn propagation_upload_matches_python_lxmf_1_1_0() {
     for end in 0..upload.packed.len() {
         assert!(unpack_propagation_container(&upload.packed[..end]).is_err());
     }
+}
+
+#[test]
+fn stamp_verification_matches_python_lxmf_1_1_0() {
+    let expected: StampVector =
+        serde_json::from_str(include_str!("../../../vectors/lxmf_stamp.json")).unwrap();
+    assert_eq!(expected.expand_rounds, DELIVERY_WORKBLOCK_ROUNDS);
+    let message_id = bytes(&expected.message_id);
+    let workblock = stamp_workblock(&message_id, expected.expand_rounds).unwrap();
+    assert_eq!(
+        reticulum_core::hash::full_hash(&workblock),
+        bytes(&expected.workblock_sha256)
+    );
+    let stamp = hex::decode(&expected.stamp).unwrap();
+    assert!(verify_stamp(&workblock, &stamp, expected.stamp_cost));
+    assert_eq!(stamp_value(&workblock, &stamp), expected.stamp_value);
+
+    let ticket = hex::decode(&expected.ticket).unwrap();
+    let ticket_stamp = hex::decode(&expected.ticket_stamp).unwrap();
+    assert!(verify_ticket_stamp(&ticket, &message_id, &ticket_stamp));
+    assert_eq!(
+        verify_optional_stamp(
+            &message_id,
+            Some(&ticket_stamp),
+            Some(expected.stamp_cost),
+            &[&ticket],
+        ),
+        Ok(StampValidation::Ticket)
+    );
+    assert_eq!(
+        verify_optional_stamp(&message_id, Some(&stamp), Some(expected.stamp_cost), &[],),
+        Ok(StampValidation::ProofOfWork {
+            value: expected.stamp_value
+        })
+    );
+
+    let base = vector();
+    let source_public = reticulum_core::identity::PublicIdentity::from_bytes(
+        &hex::decode(base.source_public).unwrap(),
+    )
+    .unwrap();
+    let packed = hex::decode(&expected.stamped_packed).unwrap();
+    let stamped = LxmfMessage::unpack(&packed).unwrap();
+    assert_eq!(stamped.hash, message_id);
+    assert_eq!(stamped.stamp.as_deref(), Some(stamp.as_slice()));
+    stamped.verify(&source_public).unwrap();
+    assert_eq!(stamped.pack(), packed);
 }

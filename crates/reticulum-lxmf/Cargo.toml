@@ -8,6 +8,8 @@ license.workspace = true
 reticulum-core = { path = "../reticulum-core" }
 reticulum-node = { path = "../reticulum-node" }
 rmp.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 hex.workspace = true

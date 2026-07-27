@@ -27,6 +27,7 @@ pub enum LxmfEvent {
 pub struct LxmfRouter {
     local_destination: [u8; 16],
     source_identities: BTreeMap<[u8; 16], PublicIdentity>,
+    stamp_cost: Option<u16>,
 }
 
 impl LxmfRouter {
@@ -34,6 +35,7 @@ impl LxmfRouter {
         Self {
             local_destination: delivery_destination_hash(local_identity),
             source_identities: BTreeMap::new(),
+            stamp_cost: None,
         }
     }
 
@@ -45,6 +47,10 @@ impl LxmfRouter {
         let destination = delivery_destination_hash(&source);
         self.source_identities.insert(destination, source);
         destination
+    }
+
+    pub fn set_stamp_cost(&mut self, stamp_cost: Option<u16>) {
+        self.stamp_cost = stamp_cost;
     }
 
     /// Send the complete packed message over an established RNS link.
@@ -115,6 +121,12 @@ impl LxmfRouter {
             .get(&message.source)
             .ok_or(CoreError::InvalidField)?;
         message.verify(source)?;
+        crate::verify_optional_stamp(
+            &message.hash,
+            message.stamp.as_deref(),
+            self.stamp_cost,
+            &[],
+        )?;
         Ok(LxmfEvent::Message(message))
     }
 }

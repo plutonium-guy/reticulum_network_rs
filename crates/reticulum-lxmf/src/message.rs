@@ -21,6 +21,8 @@ pub struct LxmfMessage {
     pub content: Vec<u8>,
     /// One complete MessagePack map value, retained byte-for-byte.
     pub fields: Vec<u8>,
+    /// Optional LXMF delivery stamp (32-byte PoW or 16-byte ticket stamp).
+    pub stamp: Option<Vec<u8>>,
     pub signature: [u8; SIGNATURE_LENGTH],
     pub hash: [u8; HASH_LENGTH],
 }
@@ -50,13 +52,14 @@ impl LxmfMessage {
             title: title.to_vec(),
             content: content.to_vec(),
             fields: fields_msgpack.to_vec(),
+            stamp: None,
             signature: source_identity.sign(&signed_part),
             hash,
         }
     }
 
     pub fn pack(&self) -> Vec<u8> {
-        let payload = self.payload();
+        let payload = self.wire_payload();
         let mut packed = Vec::with_capacity(HEADER_LENGTH + payload.len());
         packed.extend_from_slice(&self.destination);
         packed.extend_from_slice(&self.source);
@@ -78,9 +81,14 @@ impl LxmfMessage {
         let signature = bytes[DESTINATION_LENGTH * 2..HEADER_LENGTH]
             .try_into()
             .map_err(|_| CoreError::Truncated)?;
-        let payload = &bytes[HEADER_LENGTH..];
-        let decoded = decode_payload(payload)?;
-        let hash = full_hash(&hashed_part(&destination, &source, payload));
+        let decoded = decode_payload(&bytes[HEADER_LENGTH..])?;
+        let payload = encode_payload(
+            decoded.timestamp,
+            &decoded.title,
+            &decoded.content,
+            &decoded.fields,
+        );
+        let hash = full_hash(&hashed_part(&destination, &source, &payload));
 
         Ok(Self {
             destination,
@@ -89,6 +97,7 @@ impl LxmfMessage {
             title: decoded.title,
             content: decoded.content,
             fields: decoded.fields,
+            stamp: decoded.stamp,
             signature,
             hash,
         })
@@ -110,6 +119,22 @@ impl LxmfMessage {
     pub fn payload(&self) -> Vec<u8> {
         encode_payload(self.timestamp, &self.title, &self.content, &self.fields)
     }
+
+    fn wire_payload(&self) -> Vec<u8> {
+        match self.stamp.as_deref() {
+            None => self.payload(),
+            Some(stamp) => {
+                let mut payload = Vec::new();
+                write_array_len(&mut payload, 5).expect("writing to Vec cannot fail");
+                write_f64(&mut payload, self.timestamp).expect("writing to Vec cannot fail");
+                write_bin(&mut payload, &self.title).expect("writing to Vec cannot fail");
+                write_bin(&mut payload, &self.content).expect("writing to Vec cannot fail");
+                payload.extend_from_slice(&self.fields);
+                write_bin(&mut payload, stamp).expect("writing to Vec cannot fail");
+                payload
+            }
+        }
+    }
 }
 
 struct DecodedPayload {
@@ -117,11 +142,13 @@ struct DecodedPayload {
     title: Vec<u8>,
     content: Vec<u8>,
     fields: Vec<u8>,
+    stamp: Option<Vec<u8>>,
 }
 
 fn decode_payload(payload: &[u8]) -> Result<DecodedPayload, CoreError> {
     let mut position = 0;
-    if read_collection_len(payload, &mut position, 0x90, 0xdc, 0xdd)? != 4 {
+    let length = read_collection_len(payload, &mut position, 0x90, 0xdc, 0xdd)?;
+    if !matches!(length, 4 | 5) {
         return Err(CoreError::InvalidField);
     }
     if take_byte(payload, &mut position)? != 0xcb {
@@ -141,6 +168,16 @@ fn decode_payload(payload: &[u8]) -> Result<DecodedPayload, CoreError> {
         return Err(CoreError::InvalidField);
     }
     skip_value(payload, &mut position, 0)?;
+    let fields_end = position;
+    let stamp = if length == 5 {
+        let stamp = read_binary(payload, &mut position)?;
+        if !matches!(stamp.len(), 16 | 32) {
+            return Err(CoreError::InvalidField);
+        }
+        Some(stamp)
+    } else {
+        None
+    };
     if position != payload.len() {
         return Err(CoreError::InvalidField);
     }
@@ -148,7 +185,8 @@ fn decode_payload(payload: &[u8]) -> Result<DecodedPayload, CoreError> {
         timestamp,
         title,
         content,
-        fields: payload[fields_start..position].to_vec(),
+        fields: payload[fields_start..fields_end].to_vec(),
+        stamp,
     })
 }
 

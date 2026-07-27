@@ -929,11 +929,13 @@ name = "reticulum-lxmf"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "hkdf",
  "reticulum-core",
  "reticulum-node",
  "rmp",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
