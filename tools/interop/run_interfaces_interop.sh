@@ -90,6 +90,13 @@ kill "$CASE_RUST_PID" 2>/dev/null || true
 wait "$CASE_RUST_PID" 2>/dev/null || true
 
 run_roundtrip \
+  tcp6 \
+  "$ROOT/tools/interop/reticulumd_tcp6_server.toml" \
+  "$ROOT/tools/interop/rns_tcp6_client_config"
+kill "$CASE_RUST_PID" 2>/dev/null || true
+wait "$CASE_RUST_PID" 2>/dev/null || true
+
+run_roundtrip \
   ifac \
   "$ROOT/tools/interop/reticulumd_ifac.toml" \
   "$ROOT/tools/interop/rns_ifac_config"

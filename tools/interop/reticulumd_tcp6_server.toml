@@ -1,0 +1,9 @@
+identity_path = "reticulum-rust-tcp6-server.identity"
+app_name = "reticulum_rust"
+aspects = ["message"]
+app_data = "rust TCP IPv6 server"
+announce_interval_secs = 2
+
+[[interface]]
+type = "tcp_server"
+listen = "[::1]:42521"

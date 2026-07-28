@@ -1,0 +1,14 @@
+[reticulum]
+  enable_transport = No
+  share_instance = No
+
+[logging]
+  loglevel = 3
+
+[interfaces]
+
+  [[Rust TCP6 Server]]
+    type = TCPClientInterface
+    enabled = Yes
+    target_host = ::1
+    target_port = 42521

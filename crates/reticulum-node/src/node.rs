@@ -85,6 +85,7 @@ pub struct Node<C: Clock = NoClock> {
     pending_receipts: BTreeMap<[u8; 32], PendingReceipt>,
     outbound_resources: BTreeMap<([u8; 16], [u8; 32]), OutboundResource>,
     inbound_resources: BTreeMap<([u8; 16], [u8; 32]), InboundResource>,
+    last_prune: u64,
 }
 
 impl Node<NoClock> {
@@ -112,7 +113,27 @@ impl<C: Clock> Node<C> {
             pending_receipts: BTreeMap::new(),
             outbound_resources: BTreeMap::new(),
             inbound_resources: BTreeMap::new(),
+            last_prune: 0,
         }
+    }
+
+    /// Amortized expiry of the dedup maps. Membership checks still run per
+    /// packet (dedup correctness is unaffected); the O(n) sweep runs at most
+    /// once per second instead of on every inbound packet, so a busy relay no
+    /// longer pays a full-map scan per forwarded packet. Expired entries may
+    /// linger up to `PRUNE_INTERVAL_SECS` past their TTL — negligible against
+    /// the 60s dedup window.
+    fn maybe_prune(&mut self, now: u64) {
+        const PRUNE_INTERVAL_SECS: u64 = 1;
+        if self.last_prune != 0 && now.saturating_sub(self.last_prune) < PRUNE_INTERVAL_SECS {
+            return;
+        }
+        self.last_prune = now;
+        self.seen_packets.retain(|_, expires_at| *expires_at > now);
+        self.seen_announces
+            .retain(|_, expires_at| *expires_at > now);
+        self.seen_path_requests
+            .retain(|_, expires_at| *expires_at > now);
     }
 
     pub fn now_secs(&self) -> u64 {
@@ -597,7 +618,7 @@ impl<C: Clock> Node<C> {
             return Vec::new();
         }
         let now = self.clock.now_secs();
-        self.seen_packets.retain(|_, expires_at| *expires_at > now);
+        self.maybe_prune(now);
         let packet_hash = packet.packet_hash();
         if self.seen_packets.contains_key(&packet_hash) {
             return Vec::new();
@@ -1114,8 +1135,6 @@ impl<C: Clock> Node<C> {
             return alloc::vec![Event::Error(NodeError::Core(error))];
         }
         let now = self.clock.now_secs();
-        self.seen_announces
-            .retain(|_, expires_at| *expires_at > now);
         let seen_key = (*dest_hash, announce.random_hash);
         if self.seen_announces.contains_key(&seen_key) {
             return Vec::new();
@@ -1194,8 +1213,6 @@ impl<C: Clock> Node<C> {
             return;
         };
         let now = self.clock.now_secs();
-        self.seen_path_requests
-            .retain(|_, expires_at| *expires_at > now);
         if self.seen_path_requests.contains_key(&(target, tag)) {
             return;
         }
