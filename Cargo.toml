@@ -6,11 +6,9 @@ members = [
     "crates/reticulum-node",
     "crates/reticulum-tokio",
     "crates/reticulum-cli",
-    "crates/reticulum-wasm",
     "crates/reticulum-embedded",
     "crates/reticulum-ffi",
     "crates/reticulum-lxmf",
-    "crates/reticulum-bridge",
 ]
 
 [workspace.package]

@@ -54,15 +54,14 @@ reticulum/                      (cargo workspace)
 │   │                           framing. no_std trait; std impls behind feature.
 │   ├── reticulum-tokio         std. tokio I/O loop, TCPClientInterface,
 │   │                           drives node + interfaces. The daemon core.
-│   ├── reticulum-cli           std. rnsd-style daemon + CLI binary.
-│   └── reticulum-wasm          wasm32 bindings around core (later milestone).
+│   └── reticulum-cli           std. rnsd-style daemon + CLI binary.
 └── vectors/                    Test vectors captured from Python RNS for
                                 byte-exact validation (crypto, packet, announce).
 ```
 
 **Invariant:** all protocol logic lives in `reticulum-core` + `reticulum-node`
-(portable, unit-testable, no runtime). `reticulum-tokio` / `reticulum-wasm` /
-embedded layers only move bytes. The Milestone 1 "first message" demo runs as
+(portable, unit-testable, no runtime). `reticulum-tokio` and embedded layers
+only move bytes. The Milestone 1 "first message" demo runs as
 the std `reticulum-cli` daemon; `core` + `node` build for wasm32 and a no_std
 target from day 1 in CI even though the running node is std.
 
@@ -80,7 +79,6 @@ target from day 1 in CI even though the running node is std.
 - **reticulum-tokio** — tokio-based I/O loop that pumps interfaces into the node
   and node outbound back to interfaces. Hosts `TCPClientInterface`.
 - **reticulum-cli** — daemon + CLI binary wiring config → node → interfaces.
-- **reticulum-wasm** — wasm-bindgen wrapper (later milestone).
 
 ## Protocol primitives (RNS conformance)
 
