@@ -151,14 +151,21 @@
 
       .fingerprint { font-size: 12px; }
       .fingerprint b { color: var(--phos); }
-      .peers { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-      .peers button.chip {
-        background: #0c1c1a; color: var(--phos); border: 1px solid var(--phos-deep);
-        text-transform: none; letter-spacing: 0; font-weight: 400; padding: 0.4rem 0.6rem;
-      }
-      .peers button.chip:hover { background: #10302b; box-shadow: none; }
-      .peers button.chip small { color: var(--dim); margin-left: 0.4rem; }
       .warn { color: var(--amber); font-size: 12px; margin-top: 0.5rem; }
+      table.roster { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+      table.roster th {
+        text-align: left; color: var(--dim); font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.12em; font-size: 10.5px; padding: 0.3rem 0.6rem;
+        border-bottom: 1px solid var(--panel-edge);
+      }
+      table.roster td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #0c1a1c; }
+      table.roster tbody tr { cursor: pointer; }
+      table.roster tbody tr:hover { background: #0c1c1a; }
+      table.roster td.hash { color: var(--phos); font-family: var(--mono); word-break: break-all; }
+      table.roster td.num { color: var(--ink); }
+      table.roster tr.fresh td { animation: freshrow 1.2s ease; }
+      @keyframes freshrow { from { background: #123a30; } to { background: transparent; } }
+      #rosterCount { font-size: 11px; letter-spacing: 0.14em; }
       .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; margin-top: 1.1rem; }
 
       @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
@@ -257,8 +264,14 @@
         </div>
 
         <div class="panel">
-          <h2>discovered peers</h2>
-          <div id="peers" class="peers"><span class="muted" id="peersEmpty">none yet · announces from the mesh appear here</span></div>
+          <h2>clients on the mesh · via announce broadcast <span id="rosterCount" class="muted"></span></h2>
+          <div id="rosterWrap">
+            <p class="muted" id="rosterEmpty">none yet — every node broadcasts an announce; connect and they appear here. Click a row to address it.</p>
+            <table id="roster" class="roster hidden">
+              <thead><tr><th>destination hash</th><th>hops</th><th>seen</th><th>last</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
 
         <div class="panel">
@@ -458,19 +471,51 @@
         }
       });
 
-      // Discovered peers → clickable chips that fill the transmit target.
+      // Live client roster, built from broadcast announces heard on the mesh.
+      const roster = new Map();   // destHex -> { hops, count, first, last }
+      const agoText = (ms) => {
+        const s = Math.floor((Date.now() - ms) / 1000);
+        if (s < 5) return "now";
+        if (s < 60) return `${s}s`;
+        if (s < 3600) return `${Math.floor(s / 60)}m`;
+        return `${Math.floor(s / 3600)}h`;
+      };
       function addPeer(destHex, hops) {
-        if (knownPeers.has(destHex)) return;
-        knownPeers.add(destHex);
-        $("peersEmpty")?.remove();
-        const chip = document.createElement("button");
-        chip.className = "chip";
-        chip.innerHTML = `${destHex.slice(0, 16)}…<small>${hops} hop${hops === 1 ? "" : "s"}</small>`;
-        chip.title = destHex;
-        chip.addEventListener("click", () => { $("peer").value = destHex; $("msg").focus(); });
-        $("peers").appendChild(chip);
-        logLine("ann", `peer discovered · ${destHex.slice(0, 12)}… (${hops} hops)`);
+        const now = Date.now();
+        const existing = roster.get(destHex);
+        if (existing) {
+          existing.hops = hops; existing.count += 1; existing.last = now;
+        } else {
+          roster.set(destHex, { hops, count: 1, first: now, last: now });
+          logLine("ann", `client discovered · ${destHex.slice(0, 12)}… (${hops} hops)`);
+        }
+        renderRoster(destHex);
       }
+      function renderRoster(freshHex) {
+        const table = $("roster");
+        const empty = $("rosterEmpty");
+        if (roster.size === 0) { table.classList.add("hidden"); if (empty) empty.style.display = ""; return; }
+        if (empty) empty.style.display = "none";
+        table.classList.remove("hidden");
+        $("rosterCount").textContent = `(${roster.size})`;
+        const rows = [...roster.entries()].sort((a, b) => b[1].last - a[1].last);
+        const body = table.querySelector("tbody");
+        body.innerHTML = "";
+        for (const [destHex, meta] of rows) {
+          const tr = document.createElement("tr");
+          if (destHex === freshHex) tr.className = "fresh";
+          tr.title = `${destHex} — click to address`;
+          const hash = document.createElement("td"); hash.className = "hash"; hash.textContent = destHex;
+          const hops = document.createElement("td"); hops.className = "num"; hops.textContent = meta.hops;
+          const seen = document.createElement("td"); seen.className = "num"; seen.textContent = `${meta.count}×`;
+          const last = document.createElement("td"); last.className = "num"; last.textContent = agoText(meta.last);
+          tr.append(hash, hops, seen, last);
+          tr.addEventListener("click", () => { $("peer").value = destHex; $("msg").focus(); });
+          body.appendChild(tr);
+        }
+      }
+      // Refresh the "last seen" column periodically.
+      setInterval(() => { if (roster.size) renderRoster(); }, 5000);
 
       $("regBtn").addEventListener("click", () => {
         if (!node) return;
@@ -509,8 +554,8 @@
       $("lockBtn").addEventListener("click", () => {
         if (node) { try { node.disconnect(); } catch {} node.free?.(); }
         node = null; identityHex = null; connected = false;
-        knownPeers.clear(); $("log").innerHTML = "";
-        $("peers").innerHTML = '<span class="muted" id="peersEmpty">none yet · announces from the mesh appear here</span>';
+        knownPeers.clear(); roster.clear(); renderRoster();
+        $("log").innerHTML = ""; $("rosterCount").textContent = "";
         $("connBtn").disabled = false; setNet("off");
         $("console").classList.add("hidden"); $("vault").classList.remove("hidden");
         $("pass").value = ""; $("pass2").value = ""; importing = false; refreshVaultMode();
