@@ -25,7 +25,7 @@ serde.workspace = true
 toml = "0.8"
 hex.workspace = true
 zeroize = "1"
-if-addrs = "0.13"
+if-addrs = { version = "0.14", features = ["link-local"] }
 
 [dev-dependencies]
 tempfile = "3"

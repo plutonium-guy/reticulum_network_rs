@@ -266,4 +266,23 @@ mod tests {
             "97b25576749ea936b0d8a8536ffaf442d157cf47d460dcf13c48b7bd18b6c163"
         );
     }
+
+    #[test]
+    fn resolves_an_available_link_local_interface() {
+        let Some(name) = if_addrs::get_if_addrs()
+            .unwrap()
+            .into_iter()
+            .find(|interface| {
+                matches!(
+                    interface.ip(),
+                    IpAddr::V6(ip) if ip.is_unicast_link_local()
+                )
+            })
+            .map(|interface| interface.name)
+        else {
+            return;
+        };
+
+        assert!(link_local_interface(&name).is_ok());
+    }
 }

@@ -1,8 +1,9 @@
 use std::process::ExitCode;
 
-use reticulum_tui::config::{load_config, parse_args};
+use reticulum_tui::{config::parse_args, runtime};
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let options = match parse_args(std::env::args().skip(1)) {
         Ok(options) => options,
         Err(error) => {
@@ -10,11 +11,8 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match load_config(options.config_path.as_deref()) {
-        Ok(config) => {
-            println!("{config:?}");
-            ExitCode::SUCCESS
-        }
+    match runtime::run(options).await {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("reticulum-tui: {error}");
             ExitCode::FAILURE

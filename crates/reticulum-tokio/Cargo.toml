@@ -16,7 +16,7 @@ reticulum-lxmf = { path = "../reticulum-lxmf" }
 tokio = { version = "1", features = ["net", "io-util", "rt", "rt-multi-thread", "macros", "sync", "time"] }
 getrandom = "0.2"
 async-trait = "0.1"
-if-addrs = "0.14"
+if-addrs = { version = "0.14", features = ["link-local"] }
 socket2 = { version = "0.6", features = ["all"] }
 serialport = { version = "4", optional = true, default-features = false }
 

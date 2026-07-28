@@ -28,4 +28,5 @@ reticulum-tokio = { path = "../reticulum-tokio" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
+async-trait = "0.1"
 tempfile = "3"
