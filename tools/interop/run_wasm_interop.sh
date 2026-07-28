@@ -59,8 +59,15 @@ PYTHONUNBUFFERED=1 "$RNSD" --config "$RNS_CONFIG" -v \
 PIDS+=("$!")
 wait_for_port 127.0.0.1 42428
 
-PYTHONUNBUFFERED=1 "$PYTHON" "$ROOT/tools/wasm/bridge.py" \
-  >"$WORK_DIR/bridge.log" 2>&1 &
+# Bridge is pluggable: default to the Python reference, or set BRIDGE_CMD to the
+# Rust binary (both print WS_BRIDGE_READY). e.g.
+#   BRIDGE_CMD="$ROOT/target/debug/reticulum-bridge" ./run_wasm_interop.sh
+if [[ -n "${BRIDGE_CMD:-}" ]]; then
+  PYTHONUNBUFFERED=1 $BRIDGE_CMD >"$WORK_DIR/bridge.log" 2>&1 &
+else
+  PYTHONUNBUFFERED=1 "$PYTHON" "$ROOT/tools/wasm/bridge.py" \
+    >"$WORK_DIR/bridge.log" 2>&1 &
+fi
 PIDS+=("$!")
 wait_for_pattern "$WORK_DIR/bridge.log" "WS_BRIDGE_READY"
 

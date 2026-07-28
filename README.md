@@ -42,6 +42,7 @@ crates/
   reticulum-wasm        wasm32  browser node bindings (WebSocket transport)
   reticulum-embedded    thumbv7 no_std node over embassy + UART/KISS
   reticulum-ffi         std     uniffi bindings (Kotlin + Swift)
+  reticulum-bridge      std     WebSocket <-> TCP relay (edge binary for browser nodes)
 ```
 
 The three `no_std` crates (`core`, `interface`, `node`, plus `lxmf`) cross-compile to `wasm32-unknown-unknown` and `thumbv7em-none-eabihf`, enforced in CI.
@@ -63,7 +64,9 @@ Optional features: `--features compression` (bz2 Resources, `reticulum-core`), `
 
 ## Browser console (WASM)
 
-`tools/wasm/app.html` is an operator console for a browser-resident node, with a **passphrase-encrypted identity vault** (PBKDF2-SHA256 → AES-256-GCM, keys generated and stored only in-browser). Browsers can't open raw TCP, so it reaches the mesh through a WebSocket↔TCP bridge (`tools/wasm/bridge.py`). See `tools/wasm/README.md`.
+`tools/wasm/app.html` is an operator console for a browser-resident node, with a **passphrase-encrypted identity vault** (PBKDF2-SHA256 → AES-256-GCM, keys generated and stored only in-browser). Browsers can't open raw TCP, so it reaches the mesh through a WebSocket↔TCP bridge — either `tools/wasm/bridge.py` or the bundled `reticulum-bridge` binary. See `tools/wasm/README.md`.
+
+The console auto-deploys to **GitHub Pages** via `.github/workflows/pages.yml` on push (enable Pages → "GitHub Actions" once). The static page still needs a reachable `wss://` bridge next to an RNS node — set the bridge field in the UI to point at it.
 
 ## Interoperability testing
 

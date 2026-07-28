@@ -21,8 +21,11 @@ RNS TCP.
 # 1. Build the wasm package (once, or after core changes)
 wasm-pack build crates/reticulum-wasm --target web --out-dir ../../tools/wasm/pkg
 
-# 2. Start a Python RNS node with a TCPServerInterface, then the bridge:
-python tools/wasm/bridge.py            # WS :8765  ->  RNS TCP
+# 2. Start a Python RNS node with a TCPServerInterface, then a bridge.
+#    Either the reference Python bridge:
+python tools/wasm/bridge.py            # WS :8765  ->  RNS TCP :42428
+#    or the bundled Rust bridge (single deployable binary, same protocol):
+cargo run -p reticulum-bridge -- --listen 127.0.0.1:8765 --target 127.0.0.1:42428
 
 # 3. Serve this directory (any static server; browsers block file:// modules)
 python -m http.server --directory tools/wasm 8080
@@ -51,3 +54,21 @@ Inbound messages, delivery proofs, and errors stream into the traffic log.
 
 Security note: the vault protects the identity **at rest in this browser**. It
 is a client-side keystore for the user's own node, not an authentication server.
+
+## Deploy (GitHub Pages)
+
+`.github/workflows/pages.yml` builds the WASM package and publishes this console
+to GitHub Pages on every push to `master`/`main` (enable Pages → "GitHub Actions"
+in repo settings once). The deployed page (`index.html` = `app.html`) is fully
+static.
+
+**The static page cannot reach the mesh on its own** — it needs a reachable
+WebSocket bridge (browsers have no raw TCP). Run `reticulum-bridge` (or
+`bridge.py`) on a host next to an RNS node, expose it over `wss://`, and set the
+console's *bridge* field to that URL. The bundled Rust bridge is the recommended
+edge binary:
+
+```bash
+reticulum-bridge --listen 0.0.0.0:8765 --target <rns-host>:42428
+# put a TLS terminator in front for wss:// (browsers require it on https pages)
+```
