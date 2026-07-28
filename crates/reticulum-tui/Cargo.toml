@@ -1,31 +1,31 @@
 [package]
-name = "reticulum-cli"
+name = "reticulum-tui"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
 [features]
 default = []
-serial = ["reticulum-tokio/serial"]
+serial = ["reticulum-cli/serial", "reticulum-tokio/serial"]
 
 [lib]
-name = "reticulum_cli"
+name = "reticulum_tui"
 path = "src/lib.rs"
 
 [[bin]]
-name = "reticulumd"
+name = "reticulum-tui"
 path = "src/main.rs"
 
 [dependencies]
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures-util = "0.3"
+hex.workspace = true
+ratatui = "0.28"
+reticulum-cli = { path = "../reticulum-cli" }
 reticulum-core = { path = "../reticulum-core" }
 reticulum-node = { path = "../reticulum-node" }
 reticulum-tokio = { path = "../reticulum-tokio" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-serde.workspace = true
-toml = "0.8"
-hex.workspace = true
-zeroize = "1"
-if-addrs = "0.13"
 
 [dev-dependencies]
 tempfile = "3"

@@ -5,6 +5,7 @@ pub mod config;
 use std::io;
 
 use config::{Config, IfacSettings, InterfaceConfig};
+use if_addrs::IfAddr;
 use reticulum_tokio::interface::{AsyncInterface, IfacConfig, with_ifac};
 use reticulum_tokio::{tcp::TcpClientInterface, udp::UdpInterface};
 
@@ -40,6 +41,7 @@ pub async fn build_interfaces(config: &Config) -> io::Result<Vec<Box<dyn AsyncIn
                 data_port,
                 ..
             } => {
+                let interface = auto_interface_name(&interface)?;
                 let interface = reticulum_tokio::auto::AutoInterface::new_with_ports(
                     &group_id,
                     discovery_port,
@@ -70,6 +72,27 @@ pub async fn build_interfaces(config: &Config) -> io::Result<Vec<Box<dyn AsyncIn
         interfaces.push(wrap_ifac(interface, ifac));
     }
     Ok(interfaces)
+}
+
+fn auto_interface_name(configured: &str) -> io::Result<String> {
+    if !configured.trim().is_empty() {
+        return Ok(configured.to_owned());
+    }
+    if_addrs::get_if_addrs()?
+        .into_iter()
+        .find(|candidate| {
+            matches!(
+                candidate.addr,
+                IfAddr::V6(ref address) if address.ip.is_unicast_link_local()
+            )
+        })
+        .map(|candidate| candidate.name)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::AddrNotAvailable,
+                "no IPv6 link-local interface found; set interface in the Auto configuration",
+            )
+        })
 }
 
 /// Converts user-facing IFAC settings into the Tokio interface configuration.
@@ -150,5 +173,10 @@ mod tests {
     fn ipv6_link_local_predicate_is_strict() {
         assert!(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1).is_unicast_link_local());
         assert!(!Ipv6Addr::LOCALHOST.is_unicast_link_local());
+    }
+
+    #[test]
+    fn preserves_explicit_auto_interface_name() {
+        assert_eq!(auto_interface_name("mesh0").unwrap(), "mesh0");
     }
 }
