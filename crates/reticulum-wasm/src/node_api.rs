@@ -5,7 +5,7 @@ use reticulum_core::identity::Identity;
 use reticulum_interface::hdlc::frame;
 use reticulum_node::{Event, node::Node};
 use wasm_bindgen::{JsCast, closure::Closure, prelude::*};
-use web_sys::{BinaryType, Event as WebEvent, MessageEvent, WebSocket};
+use web_sys::{BinaryType, CloseEvent, Event as WebEvent, MessageEvent, WebSocket};
 
 use crate::{HdlcStreamDecoder, WasmClock, WasmEntropy};
 
@@ -19,6 +19,20 @@ struct BrowserState {
     decoder: HdlcStreamDecoder,
     on_message: Option<Function>,
     on_delivered: Option<Function>,
+    on_announce: Option<Function>,
+    on_status: Option<Function>,
+}
+
+impl BrowserState {
+    fn emit_status(&self, state: &str, detail: &str) {
+        if let Some(callback) = self.on_status.as_ref() {
+            let _ = callback.call2(
+                &JsValue::NULL,
+                &JsValue::from_str(state),
+                &JsValue::from_str(detail),
+            );
+        }
+    }
 }
 
 impl BrowserState {
@@ -49,8 +63,12 @@ impl BrowserState {
         Ok(())
     }
 
-    fn callbacks(&self) -> (Option<Function>, Option<Function>) {
-        (self.on_message.clone(), self.on_delivered.clone())
+    fn callbacks(&self) -> (Option<Function>, Option<Function>, Option<Function>) {
+        (
+            self.on_message.clone(),
+            self.on_delivered.clone(),
+            self.on_announce.clone(),
+        )
     }
 }
 
@@ -60,6 +78,8 @@ pub struct ReticulumNode {
     state: Rc<RefCell<BrowserState>>,
     on_open: Option<Closure<dyn FnMut(WebEvent)>>,
     on_message: Option<Closure<dyn FnMut(MessageEvent)>>,
+    on_close: Option<Closure<dyn FnMut(CloseEvent)>>,
+    on_error: Option<Closure<dyn FnMut(WebEvent)>>,
     tick: Option<Closure<dyn FnMut()>>,
     interval_id: Option<i32>,
 }
@@ -80,9 +100,13 @@ impl ReticulumNode {
                 decoder: HdlcStreamDecoder::default(),
                 on_message: None,
                 on_delivered: None,
+                on_announce: None,
+                on_status: None,
             })),
             on_open: None,
             on_message: None,
+            on_close: None,
+            on_error: None,
             tick: None,
             interval_id: None,
         })
@@ -113,9 +137,25 @@ impl ReticulumNode {
 
         let open_state = Rc::clone(&self.state);
         let on_open = Closure::wrap(Box::new(move |_event: WebEvent| {
-            let _ = open_state.borrow_mut().flush_pending();
+            let mut state = open_state.borrow_mut();
+            let _ = state.flush_pending();
+            state.emit_status("open", "");
         }) as Box<dyn FnMut(_)>);
         socket.set_onopen(Some(on_open.as_ref().unchecked_ref()));
+
+        let close_state = Rc::clone(&self.state);
+        let on_close = Closure::wrap(Box::new(move |event: CloseEvent| {
+            close_state
+                .borrow()
+                .emit_status("closed", &format!("{} {}", event.code(), event.reason()));
+        }) as Box<dyn FnMut(_)>);
+        socket.set_onclose(Some(on_close.as_ref().unchecked_ref()));
+
+        let error_state = Rc::clone(&self.state);
+        let on_error = Closure::wrap(Box::new(move |_event: WebEvent| {
+            error_state.borrow().emit_status("error", "");
+        }) as Box<dyn FnMut(_)>);
+        socket.set_onerror(Some(on_error.as_ref().unchecked_ref()));
 
         let message_state = Rc::clone(&self.state);
         let on_message = Closure::wrap(Box::new(move |event: MessageEvent| {
@@ -164,6 +204,8 @@ impl ReticulumNode {
 
         self.on_open = Some(on_open);
         self.on_message = Some(on_message);
+        self.on_close = Some(on_close);
+        self.on_error = Some(on_error);
         self.tick = Some(tick);
         self.interval_id = Some(interval_id);
         Ok(())
@@ -207,6 +249,20 @@ impl ReticulumNode {
         self.state.borrow_mut().on_delivered = Some(callback);
     }
 
+    /// Fires `callback(destination_hex, hops)` when a peer's announce is learned.
+    #[wasm_bindgen(js_name = setOnAnnounce)]
+    pub fn set_on_announce(&self, callback: Function) {
+        self.state.borrow_mut().on_announce = Some(callback);
+    }
+
+    /// Fires `callback(state, detail)` on WebSocket lifecycle changes, where
+    /// `state` is "open" | "closed" | "error". For "closed", `detail` is the
+    /// close code and reason.
+    #[wasm_bindgen(js_name = setOnStatus)]
+    pub fn set_on_status(&self, callback: Function) {
+        self.state.borrow_mut().on_status = Some(callback);
+    }
+
     pub fn disconnect(&mut self) {
         if let Some(interval_id) = self.interval_id.take()
             && let Some(window) = web_sys::window()
@@ -216,10 +272,14 @@ impl ReticulumNode {
         if let Some(socket) = self.state.borrow_mut().socket.take() {
             socket.set_onopen(None);
             socket.set_onmessage(None);
+            socket.set_onclose(None);
+            socket.set_onerror(None);
             let _ = socket.close();
         }
         self.on_open = None;
         self.on_message = None;
+        self.on_close = None;
+        self.on_error = None;
         self.tick = None;
         self.state.borrow_mut().pending.clear();
     }
@@ -231,7 +291,9 @@ impl Drop for ReticulumNode {
     }
 }
 
-fn dispatch(events: Vec<Event>, callbacks: (Option<Function>, Option<Function>)) {
+type Callbacks = (Option<Function>, Option<Function>, Option<Function>);
+
+fn dispatch(events: Vec<Event>, callbacks: Callbacks) {
     for event in events {
         match event {
             Event::Message {
@@ -251,6 +313,15 @@ fn dispatch(events: Vec<Event>, callbacks: (Option<Function>, Option<Function>))
                     let _ = callback.call1(
                         &JsValue::NULL,
                         &JsValue::from_str(&hex::encode(packet_hash)),
+                    );
+                }
+            }
+            Event::Announce { dest_hash, hops } => {
+                if let Some(callback) = callbacks.2.as_ref() {
+                    let _ = callback.call2(
+                        &JsValue::NULL,
+                        &JsValue::from_str(&hex::encode(dest_hash)),
+                        &JsValue::from(hops),
                     );
                 }
             }

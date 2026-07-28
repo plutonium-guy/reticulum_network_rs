@@ -17,6 +17,7 @@ getrandom = { version = "0.2", features = ["js"] }
 hex.workspace = true
 web-sys = { version = "0.3", features = [
     "BinaryType",
+    "CloseEvent",
     "Event",
     "MessageEvent",
     "WebSocket",
